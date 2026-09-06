@@ -5,38 +5,42 @@ import fastifyStatic from "@fastify/static";
 import { join } from "node:path";
 
 
-const app = Fastify()
-await app.register(websocket)
+const PORT = Number(process.env.PORT ?? 8000);
+
+const app = Fastify({ logger: true });
+
+
 await app.register(fastifyStatic, {
-    root: join(import.meta.dirname, "../../public"),
+    root: join(process.cwd(), "public"),
 });
+await app.register(websocket);
+
+/** All currently connected browsers */
 const clients = new Set<WebSocket>();
 
-app.get("/ws", { websocket: true }, (sock) => {
+app.get("/ws", { websocket: true }, (sock: WebSocket) => {
     // add socket to clients
     clients.add(sock);
+    app.log.info(`connected - now have ${clients.size} websockets in total`);
 
     // broadcast to all clients
-    sock.on("message", (data) => {
+    sock.on("message", (data: Buffer) => {
+        // turn Raw Buffer data to string 
+        const text = data.toString();
         for (const client of clients) {
-            client.send(data.toString());
+            client.send(text);
         }
-
-
-        console.log(`currently there are ${clients.size} of clients connected`)
     });
-
-    // sock.on("ping", (data) => {
-    //     console.log(data.toString());
-    //     console.log(`currently there are ${clients.size} of clients connected`);
-    // })
-
-    // close socket
 
     sock.on("close", () => {
         clients.delete(sock);
-        console.log(`client size after closing client socket, we now have ${clients.size} connections`);
+        app.log.info(`disconnected - now have ${clients.size} websockets total`);
     });
+
+    sock.on("error", (err) => {
+        app.log.error(err);
+        clients.delete(sock);
+    })
 });
 
-await app.listen({ port: 8000, host: "0.0.0.0" });
+await app.listen({ port: PORT, host: "0.0.0.0" });

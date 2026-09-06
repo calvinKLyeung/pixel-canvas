@@ -1,55 +1,45 @@
-import { W, H } from "../shared/constants.js";
+const app = document.getElementById("app")!;
 
+app.innerHTML = `
+    <p id="status"> connecting</p>
+    <input id="msg" type="text" placeholder="type something">
+    <button id="send" disabled>Send</button>
+    <pre id="log"></pre>
+`;
 
+const statusMain = document.getElementById("status")!;
+const input = document.getElementById("msg") as HTMLInputElement;
+const button = document.getElementById("send") as HTMLButtonElement;
+const log = document.getElementById("log")!;
 
-const sock = new WebSocket(`ws://${location.host}/ws`);
-
-
-let isOpened = false;
+// https : wss   http : ws
+const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+const sock = new WebSocket(`${protocol}//${location.host}/ws`);
 
 sock.addEventListener("open", (msg) => {
-    isOpened = true;
-    console.log("Websocket connected");
+    statusMain.textContent = "connected";
+    button.disabled = false; // connected = safe to click
 });
 
 sock.addEventListener("message", (e) => {
-    console.log("Received from websocket", e.data);
-
-    try {
-        const msg = JSON.parse(e.data);
-        console.log(msg)
-    } catch (err) {
-        console.error("bad message", err, e.data)
-    }
+    log.textContent += `${e.data}\n`;
 });
 
 sock.addEventListener("close", (e) => {
-    isOpened = false;
-    console.log(`WebSocket closed (code ${e.code})`);
+    statusMain.textContent = "disconnected";
+    button.disabled = true;
 });
 
 sock.addEventListener("error", (e) => {
     console.error("Websocket error", e);
+    statusMain.textContent = "error = check the console";
 })
 
-
-
-
-
-
-
-
-const button = document.querySelector("#send-btn")!;
-
 button.addEventListener("click", () => {
-    if (!isOpened) {
-        console.warn("socket not open yet — ignoring send");
-        return;
+    if (input.value) {
+        sock.send(input.value);
+        input.value = ""
     }
-    sock.send(JSON.stringify({ type: "ping", payload: "hello" }));
-});
-
-
-
+})
 
 // document.body.textContent = `client ok, board is ${W}x${H}`;

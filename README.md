@@ -4,6 +4,7 @@
 
 ```bash
 npm install
+npm run build:client
 npm run watch:client   # terminal 1 — bundles src/client -> public/main.js, rebuilds on save
 npm run dev            # terminal 2 — server on http://localhost:8000
 ```
