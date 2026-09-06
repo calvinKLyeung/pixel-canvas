@@ -1,12 +1,21 @@
 <!DOCTYPE html>
 <html>
+<script type="module" src="/main.js"></script>
   <head>
     <meta charset="utf-8">
     <link rel="stylesheet"
           href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <title></title>
   </head>
   <body>
-    <div id="app"></div>
-    <script type="module" src="/main.js"></script>
+<!--    <div id="app"></div>-->
+<!--    <script type="module" src="/main.js"></script>-->
+    <main class="container">
+      <h1>Pixel Canvas</h1>
+      <p id="status">Connecting...</p>
+      <canvas id="canvas" style="width:768px;max-width:100%;
+          image-rendering:pixelated;border:1px solid #ccc"></canvas>
+      <div id="palette"></div>
+    </main>
   </body>
 </html>
