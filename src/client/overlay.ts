@@ -48,19 +48,4 @@ export function drawGrid() {
         overlayContext.moveTo(0, py); overlayContext.lineTo(rect.width, py);
     }
     overlayContext.stroke();
-
-    // Coarse grid every 16 cells, for orientation. Only when there's room.
-    if (cell >= 8) {
-        overlayContext.strokeStyle = "rgba(60,60,60,0.45)";
-        overlayContext.beginPath();
-        for (let x = 0; x <= W; x += 16) {
-            const px = Math.round(x * cell) + 0.5;
-            overlayContext.moveTo(px, 0); overlayContext.lineTo(px, rect.height);
-        }
-        for (let y = 0; y <= H; y += 16) {
-            const py = Math.round(y * cell) + 0.5;
-            overlayContext.moveTo(0, py); overlayContext.lineTo(rect.width, py);
-        }
-        overlayContext.stroke();
-    }
 }
