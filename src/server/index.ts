@@ -5,9 +5,12 @@ import fastifyStatic from "@fastify/static";
 import { join } from "node:path";
 
 import { W, H, index} from "../shared/constants.js";
-import { PALETTE_SIZE, PALETTE } from "../shared/palette.js";
+import { PALETTE_SIZE } from "../shared/palette.js";
 import { board } from "./board.js";
 import { dirty, markDirty, TICK_HZ, startTicker } from "./hub.js";
+
+import { deflateSync } from "node:zlib";
+import { MSG } from "../shared/protocols.js";
 
 const PORT = Number(process.env.PORT ?? 8000);
 
@@ -25,7 +28,8 @@ const clients = new Set<WebSocket>();
 app.get("/ws", { websocket: true }, (sock: WebSocket) => {
     // add socket to clients
     clients.add(sock);
-    sock.send(JSON.stringify({ t: "snapshot", board: Array.from(board) }));
+    // sock.send(JSON.stringify({ t: "snapshot", board: Array.from(board) }));
+    sock.send(encodeSnapshot());
     app.log.info(`connected - now have ${clients.size} websockets in total`);
 
 
@@ -113,6 +117,17 @@ app.addHook("onReady", async () => {
     startTicker(flush);
     app.log.info(`ticking at ${TICK_HZ}Hz`);
 })
+
+// build the snapshot of the board with header and compressed board data
+function encodeSnapshot(): Buffer {
+    const header = Buffer.alloc(5);     // need 5 bytes
+    header.writeUInt8(MSG.SNAPSHOT, 0); // byte 0    8  bits
+    header.writeUInt16LE(W, 1);         // byte 1-2  16 bits
+    header.writeUInt16LE(H, 3);         // byte 3-4  16 bits
+    return Buffer.concat([header, deflateSync(board)]);
+}
+
+
 
 
 

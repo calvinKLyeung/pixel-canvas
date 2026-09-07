@@ -4,12 +4,20 @@ import { cssColour, PALETTE } from "../shared/palette.js";
 import { initRenderer, render } from "./render.js";
 import { initOverlay } from "./overlay.js";
 
+import { MSG, viewOf } from "../shared/protocols.js";
+import { inflate } from "./decode.js";
+
+
+
 const statusElem = document.getElementById("status")!;
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 
 // https : wss   http : ws
 const protocol = location.protocol === "https:" ? "wss:" : "ws:";
 const sock = new WebSocket(`${protocol}//${location.host}/ws`);
+// !!! ensure sock uses array buffer instead of default Blob that require async !!!
+sock.binaryType = "arraybuffer";
+
 
 // board
 const board: Uint8Array  = new Uint8Array(W * H);
@@ -26,22 +34,45 @@ sock.addEventListener("open", (msg) => {
 });
 
 
-sock.addEventListener("message", (e) => {
-    const msg = JSON.parse(e.data);
-
-    if (msg.t === "snapshot") {
-        board.set(msg.board);
-        render(board);  // only 1 render per message
-    } else if (msg.t === "delta") {
-        for (const pixel of msg.changes) {
-            board[index(pixel.x, pixel.y)] = pixel.c;
+sock.addEventListener("message", async (e) => {
+    // String -> old JSON path
+    if (typeof e.data === "string") {
+        const msg = JSON.parse(e.data);
+        if (msg.t === "delta") {
+            for (const pixel of msg.changes) {
+                board[index(pixel.x, pixel.y)] = pixel.c;
+            }
+            render(board);
         }
-        render(board);  // only 1 render per message
+        return;
     }
-    // else if (msg.t === "place") {
-    //     board[index(msg.x, msg.y)] = msg.c;
-    // }
-    // render(board);
+
+    // Binary -> use the new protocol
+    const view = viewOf(e.data as ArrayBuffer);
+
+    // get type of MSG
+    switch (view.getUint8(0)) {
+        case MSG.SNAPSHOT: {
+            const w = view.getUint16(1, true);  // true = little endian
+            const h = view.getUint16(3, true);  // true = little endian
+            const body = (e.data as ArrayBuffer).slice(5); // index 5 onward, copy data
+            const pixels = await inflate(body); // unpack Promise
+
+            // is Snapshot but length mismatch
+            if (pixels.length !== w * h) {
+                // something went wrong
+                console.error(`bad snapshot: got ${pixels.length}, when expecting ${w * h}`);
+                return;
+            }
+            // valid case
+            board.set(pixels);
+            render(board);
+            break;
+        }
+        // some unknown data
+        default:
+            console.warn("unknown message type", view.getUint8(0));
+    }
 });
 
 
