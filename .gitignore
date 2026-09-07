@@ -3,3 +3,6 @@ public/main.js
 *.db
 *.db-wal
 *.db-shm
+.env
+dist/
+.idea/
