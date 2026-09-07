@@ -1,4 +1,5 @@
 import { W, H, index} from "../shared/constants.js";
+import { line } from "../shared/line.js";
 import { cssColour, PALETTE } from "../shared/palette.js";
 import { initRenderer, render } from "./render.js";
 
@@ -63,16 +64,60 @@ PALETTE.forEach((_, i) => {
     paletteElem.appendChild(button);
 });
 
-canvas.addEventListener("click", (e) => {
-    const rectangle = canvas.getBoundingClientRect();
+// canvas.addEventListener("click", (e) => {
+//     const rectangle = canvas.getBoundingClientRect();
+//
+//     // only matters when the click landed within target boundaries
+//     // display size 768 scale to board size 256
+//     const x = Math.floor((e.clientX - rectangle.left) / rectangle.width * W);
+//     const y = Math.floor((e.clientY - rectangle.top) / rectangle.height * H);
+//
+//     // opt out if out of bound
+//     if (x < 0 || x >= W || y < 0 || y >= H) return;
+//     // send t:"place" msg back to server
+//     sendPlace(x, y, selectedColour);
+// })
 
-    // only matters when the click landed within target boundaries
-    // display size 768 scale to board size 256
+let drawing = false;
+let lastX = -1, lastY = -1;
+
+function toBoard(e: PointerEvent): [number, number] | null {
+    const rectangle = canvas.getBoundingClientRect();
     const x = Math.floor((e.clientX - rectangle.left) / rectangle.width * W);
     const y = Math.floor((e.clientY - rectangle.top) / rectangle.height * H);
+    return (x < 0 || x >= W || y < 0 || y >= H) ? null : [x, y];
+}
 
-    // opt out if out of bound
-    if (x < 0 || x >= W || y < 0 || y >= H) return;
-    // send t:"place" msg back to server
-    sendPlace(x, y, selectedColour);
+canvas.addEventListener("pointerdown", (e) => {
+    const pos = toBoard(e);
+    if (!pos) return;
+    e.preventDefault(); // cancel browser built-in reaction to the event
+    canvas.setPointerCapture(e.pointerId); // keep the events if we leave the canvas
+    drawing = true;
+    [lastX, lastY] = pos;
+    sendPlace(pos[0], pos[1], selectedColour); // paint the pixel with selected Colour
 })
+
+canvas.addEventListener("pointermove", (e) => {
+    if (!drawing) return;
+    const pos = toBoard(e);
+    if (!pos) return;
+    const [x, y] = pos;
+    if (x === lastX && y === lastY) return; // move to same pixel = nothing to do
+
+    // fill the gap, since the last event to what just happened
+    line(lastX, lastY, x, y, (px, py) => {
+        if (px === lastX && py === lastY) return; // same as starting point = nothing to paint
+        sendPlace(px, py, selectedColour)
+    });  // paint the pixel with selected Colour
+    [lastX, lastY] = [x, y];
+})
+
+function endStroke(e: PointerEvent) {
+    if (!drawing) return;
+    drawing = false;
+    canvas.releasePointerCapture(e.pointerId);
+}
+
+canvas.addEventListener("pointerup", endStroke);
+canvas.addEventListener("pointercancel", endStroke)
