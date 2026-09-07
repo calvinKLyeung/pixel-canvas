@@ -2,7 +2,7 @@ import { W, H, index} from "../shared/constants.js";
 import { line } from "../shared/line.js";
 import { cssColour, PALETTE } from "../shared/palette.js";
 import { initRenderer, render } from "./render.js";
-
+import { initOverlay } from "./overlay.js";
 
 const statusElem = document.getElementById("status")!;
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
@@ -14,6 +14,7 @@ const sock = new WebSocket(`${protocol}//${location.host}/ws`);
 // board
 const board: Uint8Array  = new Uint8Array(W * H);
 initRenderer(canvas);
+initOverlay(document.getElementById("overlay") as HTMLCanvasElement)
 render(board); // paint white board with rendered RGBA
 
 function sendPlace(x: number, y: number, c: number) {
@@ -64,19 +65,6 @@ PALETTE.forEach((_, i) => {
     paletteElem.appendChild(button);
 });
 
-// canvas.addEventListener("click", (e) => {
-//     const rectangle = canvas.getBoundingClientRect();
-//
-//     // only matters when the click landed within target boundaries
-//     // display size 768 scale to board size 256
-//     const x = Math.floor((e.clientX - rectangle.left) / rectangle.width * W);
-//     const y = Math.floor((e.clientY - rectangle.top) / rectangle.height * H);
-//
-//     // opt out if out of bound
-//     if (x < 0 || x >= W || y < 0 || y >= H) return;
-//     // send t:"place" msg back to server
-//     sendPlace(x, y, selectedColour);
-// })
 
 let drawing = false;
 let lastX = -1, lastY = -1;
