@@ -25,15 +25,25 @@ sock.addEventListener("open", (msg) => {
     statusElem.textContent = "connected";
 });
 
+
 sock.addEventListener("message", (e) => {
     const msg = JSON.parse(e.data);
+
     if (msg.t === "snapshot") {
         board.set(msg.board);
-    } else if (msg.t === "place") {
-        board[index(msg.x, msg.y)] = msg.c;
+        render(board);  // only 1 render per message
+    } else if (msg.t === "delta") {
+        for (const pixel of msg.changes) {
+            board[index(pixel.x, pixel.y)] = pixel.c;
+        }
+        render(board);  // only 1 render per message
     }
-    render(board);
+    // else if (msg.t === "place") {
+    //     board[index(msg.x, msg.y)] = msg.c;
+    // }
+    // render(board);
 });
+
 
 sock.addEventListener("close", (e) => {
     statusElem.textContent = "disconnected";

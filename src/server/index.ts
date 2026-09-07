@@ -5,14 +5,15 @@ import fastifyStatic from "@fastify/static";
 import { join } from "node:path";
 
 import { W, H, index} from "../shared/constants.js";
-import {PALETTE_SIZE, PALETTE} from "../shared/palette.js";
-import {board} from "./board.js";
+import { PALETTE_SIZE, PALETTE } from "../shared/palette.js";
+import { board } from "./board.js";
+import { dirty, markDirty, TICK_HZ, startTicker } from "./hub.js";
 
 const PORT = Number(process.env.PORT ?? 8000);
 
 const app = Fastify({ logger: true });
 
-
+/** Always First */
 await app.register(fastifyStatic, {
     root: join(process.cwd(), "public"),
 });
@@ -56,11 +57,12 @@ app.get("/ws", { websocket: true }, (sock: WebSocket) => {
         // update target location with colour index
         board[index(x as number, y as number)] = c as number;
 
-        // broadcast clients about the update
-        const out = JSON.stringify({ t: "place", x, y, c});
-        for (const client of clients) {
-            client.send(out);
-        }
+        // // broadcast clients about the update
+        // const out = JSON.stringify({ t: "place", x, y, c});
+        // for (const client of clients) {
+        //     client.send(out);
+        // }
+        markDirty(index(x as number, y as number), c as number);
     });
 
     sock.on("close", () => {
@@ -74,4 +76,47 @@ app.get("/ws", { websocket: true }, (sock: WebSocket) => {
     })
 });
 
+
+
+/** ========== flush ========== */
+function flush(): void {
+    if (dirty.size == 0) return;
+
+    const changes = [...dirty.entries()].map(([idx, c]) => ({
+        x: idx % W,
+        y: Math.floor(idx / W),
+        c,
+    }));
+    dirty.clear();  // empty the map
+
+    const payload = JSON.stringify({ t: "delta", changes }) // batched changes
+
+    // record failed batch update broadcast
+    const dead: WebSocket[] = [];
+    for (const client of clients) {
+        try{
+            client.send(payload);
+        } catch {
+            dead.push(client);
+        }
+    }
+
+    // always remove AFTER marked dead, not during dead
+    for (const d of dead) {
+        clients.delete(d);
+    }
+}
+
+
+/** should run once after everything is wired up */
+app.addHook("onReady", async () => {
+    startTicker(flush);
+    app.log.info(`ticking at ${TICK_HZ}Hz`);
+})
+
+
+
+
+
+/** Always Last */
 await app.listen({ port: PORT, host: "0.0.0.0" });
