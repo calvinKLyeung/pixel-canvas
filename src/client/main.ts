@@ -1,5 +1,7 @@
-import { W, H } from "../shared/constants.js";
-import {cssColour, PALETTE} from "../shared/palette.js";
+import { W, H, index} from "../shared/constants.js";
+import { cssColour, PALETTE } from "../shared/palette.js";
+import { initRenderer, render } from "./render.js";
+
 
 const statusElem = document.getElementById("status")!;
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
@@ -8,12 +10,27 @@ const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const protocol = location.protocol === "https:" ? "wss:" : "ws:";
 const sock = new WebSocket(`${protocol}//${location.host}/ws`);
 
+// board
+const board: Uint8Array  = new Uint8Array(W * H);
+initRenderer(canvas);
+render(board); // paint white board with rendered RGBA
+
+function sendPlace(x: number, y: number, c: number) {
+    sock.send(JSON.stringify({ t: "place", x, y, c }));
+}
+
 sock.addEventListener("open", (msg) => {
     statusElem.textContent = "connected";
 });
 
 sock.addEventListener("message", (e) => {
-    console.log(e.data);
+    const msg = JSON.parse(e.data);
+    if (msg.t === "snapshot") {
+        board.set(msg.board);
+    } else if (msg.t === "place") {
+        board[index(msg.x, msg.y)] = msg.c;
+    }
+    render(board);
 });
 
 sock.addEventListener("close", (e) => {
@@ -56,7 +73,6 @@ canvas.addEventListener("click", (e) => {
 
     // opt out if out of bound
     if (x < 0 || x >= W || y < 0 || y >= H) return;
-
-    // sendPlace(x, y, selectedColour);
-    console.log(x, y);
+    // send t:"place" msg back to server
+    sendPlace(x, y, selectedColour);
 })
