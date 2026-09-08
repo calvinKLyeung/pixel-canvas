@@ -1,6 +1,6 @@
 import { W, H, index} from "../shared/constants.js";
 import { line } from "../shared/line.js";
-import { cssColour, PALETTE } from "../shared/palette.js";
+import { cssColour, PALETTE, EMPTY } from "../shared/palette.js";
 import { initRenderer, render } from "./render.js";
 import { initOverlay } from "./overlay.js";
 
@@ -20,7 +20,7 @@ sock.binaryType = "arraybuffer";
 
 
 // board
-const board: Uint8Array  = new Uint8Array(W * H);
+const board: Uint8Array  = new Uint8Array(W * H).fill(EMPTY);
 initRenderer(canvas);
 initOverlay(document.getElementById("overlay") as HTMLCanvasElement)
 render(board); // paint white board with rendered RGBA

@@ -12,6 +12,8 @@ import { dirty, markDirty, TICK_HZ, startTicker } from "./hub.js";
 import { deflateSync } from "node:zlib";
 import { MSG } from "../shared/protocols.js";
 
+import { renderPng } from "./export.js";
+
 const PORT = Number(process.env.PORT ?? 8000);
 
 const app = Fastify({ logger: true });
@@ -79,6 +81,25 @@ app.get("/ws", { websocket: true }, (sock: WebSocket) => {
         clients.delete(sock);
     })
 });
+
+app.get("/board.png", async (req, reply) => {
+    // relabel unknown data in query to known strings
+    const qs = req.query as { scale?: string; grid?: string; alpha?: string };
+
+    // clamp everything from query string
+    // scale too big will allocate too many pixels to img and kill the process lol
+    const scale = Math.min(Math.max(Number(qs.scale) || 4, 1), 16);
+    const grid = qs.grid === "1";
+    const alpha = qs.alpha === "1";
+    // scale=1 means unscaled 256x256 img
+    // format if client edits an export and re-import
+
+    const png = await renderPng(scale, grid, alpha);
+    return reply
+        .type("image/png") // this matters, tell the browser this is an image and not binary garbage
+        .header("Cache-Control", "no-cache") // stop app pinning stale canvas when using the img
+        .send(png);
+})
 
 
 

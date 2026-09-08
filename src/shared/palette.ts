@@ -20,6 +20,11 @@ export const PALETTE: readonly [number, number, number][] = [
 
 export const PALETTE_SIZE = PALETTE.length;
 
+/** Unpainted cell. Not a palette index — 255 is outside PALETTE_SIZE, so the
+ * `c >= PALETTE_SIZE` bound in the place handler already rejects it from clients.
+ * Keeps "never touched" separate from index 0, which stays paintable white. */
+export const EMPTY = 255;
+
 /** CSS colour for buttons*/
 export function cssColour(i: number): string {
     const colour = PALETTE[i]!;
