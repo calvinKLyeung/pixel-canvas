@@ -8,6 +8,10 @@ npx vitest
 npm run build:client
 npm run watch:client   # terminal 1 — bundles src/client -> public/main.js, rebuilds on save
 npm run dev            # terminal 2 — server on http://localhost:8000
+
+npx run loadtest.ts          # 20 bots by default  # override bot count
+BOTS=50 npm run loadtest
+URL=ws://localhost:8000/ws BOTS=50 npm run loadtest
 ```
 
 Open http://localhost:8000.

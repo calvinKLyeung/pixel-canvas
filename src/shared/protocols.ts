@@ -51,7 +51,7 @@ export interface Pixel {
 
 /**Using Uint8Array because this file and code is imported by browser code, where no Buffer exists*/
 /** PLACE pixel: client -> server, 6 bytes of info */
-export function encodePlace(pixel: Pixel): Uint8Array {
+export function encodePlace(pixel: Pixel): Uint8Array<ArrayBuffer> {
     const buff = new Uint8Array(6);
     const view = new DataView(buff.buffer);
     view.setUint8(0, MSG.PLACE);

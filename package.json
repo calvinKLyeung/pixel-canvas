@@ -7,6 +7,7 @@
     "dev": "tsx watch src/server/index.ts",
     "build:client": "esbuild src/client/main.ts --bundle --format=esm --outfile=public/main.js",
     "watch:client": "npm run build:client -- --watch",
+    "loadtest": "tsx src/loadtest.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p src/client/tsconfig.json",
     "test": "vitest"
   },

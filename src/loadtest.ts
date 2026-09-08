@@ -1,6 +1,7 @@
 import WebSocket from "ws";
 import { W, H } from "./shared/constants.js";
 import { PALETTE_SIZE } from "./shared/palette.js";
+import { encodePlace } from "./shared/protocols.js";
 
 /** get shell input, otherwise fall back to default val*/
 const URL = process.env.URL ?? "ws://localhost:8000/ws";
@@ -16,11 +17,10 @@ async function bot(id: number) {
 
     setInterval(() => {
         if (ws.readyState !== WebSocket.OPEN) return;
-        ws.send(JSON.stringify({
-            t: "place",
+        ws.send(encodePlace({
             x: Math.floor(Math.random() * W),
             y: Math.floor(Math.random() * H),
-            c: Math.floor(Math.random() * PALETTE_SIZE),
+            colour: Math.floor(Math.random() * PALETTE_SIZE),
         }));
         sent += 1;
     }, 500 + Math.random() * 1500);

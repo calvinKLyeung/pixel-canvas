@@ -4,7 +4,7 @@ import { cssColour, PALETTE, EMPTY } from "../shared/palette.js";
 import { initRenderer, render } from "./render.js";
 import { initOverlay } from "./overlay.js";
 
-import { MSG, viewOf } from "../shared/protocols.js";
+import {encodePlace, decodeDelta, MSG, viewOf} from "../shared/protocols.js";
 import { inflate } from "./decode.js";
 
 
@@ -14,6 +14,7 @@ const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 
 // https : wss   http : ws
 const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+// sends the upgrade request, causes the 101
 const sock = new WebSocket(`${protocol}//${location.host}/ws`);
 // !!! ensure sock uses array buffer instead of default Blob that require async !!!
 sock.binaryType = "arraybuffer";
@@ -25,9 +26,14 @@ initRenderer(canvas);
 initOverlay(document.getElementById("overlay") as HTMLCanvasElement)
 render(board); // paint white board with rendered RGBA
 
-function sendPlace(x: number, y: number, c: number) {
-    sock.send(JSON.stringify({ t: "place", x, y, c }));
+/** Send out PLACE pixel */
+function sendPlace(x: number, y: number, colour: number) {
+    // make sure socket still in OPEN state
+    if (sock.readyState !== WebSocket.OPEN) return;
+    sock.send(encodePlace({ x, y, colour }));
 }
+
+/**========== callbacks reacting to lifecycle events ==========*/
 
 sock.addEventListener("open", (msg) => {
     statusElem.textContent = "connected";
@@ -35,27 +41,17 @@ sock.addEventListener("open", (msg) => {
 
 
 sock.addEventListener("message", async (e) => {
-    // String -> old JSON path
-    if (typeof e.data === "string") {
-        const msg = JSON.parse(e.data);
-        if (msg.t === "delta") {
-            for (const pixel of msg.changes) {
-                board[index(pixel.x, pixel.y)] = pixel.c;
-            }
-            render(board);
-        }
-        return;
-    }
-
+    const data = e.data as ArrayBuffer;
     // Binary -> use the new protocol
     const view = viewOf(e.data as ArrayBuffer);
 
-    // get type of MSG
+    // get type tag of MSG
     switch (view.getUint8(0)) {
+        // server -> client, initial join
         case MSG.SNAPSHOT: {
             const w = view.getUint16(1, true);  // true = little endian
             const h = view.getUint16(3, true);  // true = little endian
-            const body = (e.data as ArrayBuffer).slice(5); // index 5 onward, copy data
+            const body = data.slice(5); // index 5 onward, copy data
             const pixels = await inflate(body); // unpack Promise
 
             // is Snapshot but length mismatch
@@ -67,6 +63,14 @@ sock.addEventListener("message", async (e) => {
             // valid case
             board.set(pixels);
             render(board);
+            break;
+        }
+        // server -> client, Place pixels
+        case MSG.DELTA: {
+            for (const pixel of decodeDelta(view)) {
+                board[index(pixel.x, pixel.y)] = pixel.colour;
+            }
+            render(board);  // only do once per message, not pixel, render after pixels are settled
             break;
         }
         // some unknown data
