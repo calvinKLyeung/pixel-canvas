@@ -8,11 +8,11 @@ import { W, H, index} from "../shared/constants.js";
 import { PALETTE_SIZE } from "../shared/palette.js";
 import { board } from "./board.js";
 import { dirty, markDirty, TICK_HZ, startTicker } from "./hub.js";
-
 import { deflateSync } from "node:zlib";
-import { MSG } from "../shared/protocols.js";
-
 import { renderPng } from "./export.js";
+import { MSG, viewOf, decodePlace, encodeDelta, type Pixel } from "../shared/protocols.js";
+
+
 
 const PORT = Number(process.env.PORT ?? 8000);
 
@@ -37,38 +37,23 @@ app.get("/ws", { websocket: true }, (sock: WebSocket) => {
 
     // broadcast to all clients
     sock.on("message", (data: Buffer) => {
-        // bytes -> text -> value.  Bail if the text isn't valid JSON.
-        let msg: unknown;
-        try {
-            msg = JSON.parse(data.toString());
-        } catch {
-            return; // unknown format of data
-        }
+        // nothing to read lol
+        if (data.length < 1) return;
 
-        // valid JSON can still be null, a number or a string - none have fields
-        if (typeof msg !== "object" || msg === null) return;
+        const view = viewOf(data);  // handles buffer offsets for us
 
-        // cast to make it inspectable. Now  can read legally
-        const msgRecord = msg as Record<string, unknown>;
-        if (msgRecord.t !== "place") return;
+        if (view.getUint8(0) !== MSG.PLACE) return;
+        if (data.length !== 6) return;   // wrong size means must be malformed data, drop this shit
 
-        // pull out the data
-        const {x, y, c} = msgRecord as {x: unknown, y: unknown, c:unknown};
-        // verify type and within bound
-        if (!Number.isInteger(x) || (x as number) < 0 || (x as number >= W)) return;
-        if (!Number.isInteger(y) || (y as number) < 0 || (y as number >= H)) return;
-        if (!Number.isInteger(c) || (c as number) < 0 || (c as number >= PALETTE_SIZE)) return;
+        const { x, y, colour } = decodePlace(view);
 
-        // finally safe to access the board lol
-        // update target location with colour index
-        board[index(x as number, y as number)] = c as number;
+        // Types no longer exists at runtime, have to validate everything coming from the wire
+        // drop out of bound numbers
+        if (x >= W || y >= H || colour >= PALETTE_SIZE) return;
 
-        // // broadcast clients about the update
-        // const out = JSON.stringify({ t: "place", x, y, c});
-        // for (const client of clients) {
-        //     client.send(out);
-        // }
-        markDirty(index(x as number, y as number), c as number);
+        const idx = index(x, y);
+        board[idx] = colour;
+        markDirty(idx, colour);
     });
 
     sock.on("close", () => {
@@ -107,16 +92,14 @@ app.get("/board.png", async (req, reply) => {
 function flush(): void {
     if (dirty.size == 0) return;
 
-    const changes = [...dirty.entries()].map(([idx, c]) => ({
-        x: idx % W,
-        y: Math.floor(idx / W),
-        c,
-    }));
-    dirty.clear();  // empty the map
+    const pixels: Pixel[] = []
+    for (const [boardIdx, colour] of dirty) {
+        pixels.push({ x: boardIdx % W, y: Math.floor(boardIdx / W), colour})
+    }
+    dirty.clear();
 
-    const payload = JSON.stringify({ t: "delta", changes }) // batched changes
+    const payload = encodeDelta(pixels);
 
-    // record failed batch update broadcast
     const dead: WebSocket[] = [];
     for (const client of clients) {
         try{
@@ -125,7 +108,6 @@ function flush(): void {
             dead.push(client);
         }
     }
-
     // always remove AFTER marked dead, not during dead
     for (const d of dead) {
         clients.delete(d);
