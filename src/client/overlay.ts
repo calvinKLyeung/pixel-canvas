@@ -17,6 +17,7 @@ export function initOverlay(element: HTMLCanvasElement, w: number, h: number) {
 
     // ony changes if the geometry does
     // reuse one observer - initOverlay runs again whenever the board dimensions change
+    // if observer == null OR observer == undefined, set new Observer
     observer ??= new ResizeObserver(resizeOverlay);
     observer.observe(element.parentElement!);
 }

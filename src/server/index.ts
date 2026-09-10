@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import type { FastifyRequest } from "fastify";
 import WebSocket from "ws";  // for server websocket
 import websocket from "@fastify/websocket"
 import fastifyStatic from "@fastify/static";
@@ -6,7 +7,7 @@ import { join } from "node:path";
 
 import { DEFAULT_W, DEFAULT_H, index} from "../shared/constants.js";
 import { PALETTE_SIZE } from "../shared/palette.js";
-import { createCanvas, putResident, type Canvas } from "./canvas.js";
+import {createCanvas, putResident, getResident, addClient, removeClient, broadcast, type Canvas, allResident} from "./canvas.js";
 import { TICK_HZ, startTicker } from "./hub.js";
 import { deflateSync } from "node:zlib";
 import { renderPng } from "./export.js";
@@ -24,9 +25,6 @@ await app.register(fastifyStatic, {
 });
 await app.register(websocket);
 
-/** All currently connected browsers */
-const clients = new Set<WebSocket>();
-
 /** The permanent default canvas. 04b.6 picks the canvas from the URL instead. */
 const main: Canvas = createCanvas({
     id: "main",
@@ -40,12 +38,20 @@ const main: Canvas = createCanvas({
 });
 putResident(main);
 
-app.get("/ws", { websocket: true }, (sock: WebSocket) => {
+app.get("/ws", { websocket: true }, (sock: WebSocket, req: FastifyRequest) => {
+    const id = (req.query as { c?: string }).c ?? "main";
+
+    const canvas = getResident(id);
+    if (!canvas) {
+        sock.close(4004, "no such canvas");  // 4000-4999 is ours to define
+        return;                              // reject before addClient, nothing to clean up
+    }
+
     // add socket to clients
-    clients.add(sock);
+    addClient(sock, canvas);
     // sock.send(JSON.stringify({ t: "snapshot", board: Array.from(board) }));
-    sock.send(encodeSnapshot(main));
-    app.log.info(`connected - now have ${clients.size} websockets in total`);
+    sock.send(encodeSnapshot(canvas));
+    app.log.info(`connected to ${canvas.id} - now have ${canvas.clients.size} websockets in total`);
 
 
     // broadcast to all clients
@@ -62,21 +68,21 @@ app.get("/ws", { websocket: true }, (sock: WebSocket) => {
 
         // Types no longer exists at runtime, have to validate everything coming from the wire
         // drop out of bound numbers
-        if (x >= main.w || y >= main.h || colour >= PALETTE_SIZE) return;
+        if (x >= canvas.w || y >= canvas.h || colour >= PALETTE_SIZE) return;
 
-        const idx = index(x, y, main.w);
-        main.board[idx] = colour;
-        main.dirty.set(idx, colour);    // last write wins
+        const idx = index(x, y, canvas.w);
+        canvas.board[idx] = colour;
+        canvas.dirty.set(idx, colour);    // last write wins
     });
 
     sock.on("close", () => {
-        clients.delete(sock);
-        app.log.info(`disconnected - now have ${clients.size} websockets total`);
+        removeClient(sock);
+        app.log.info(`disconnected from ${canvas.id} - now have ${canvas.clients.size} websockets total`);
     });
 
     sock.on("error", (err) => {
         app.log.error(err);
-        clients.delete(sock);
+        removeClient(sock);
     })
 });
 
@@ -101,36 +107,28 @@ app.get("/board.png", async (req, reply) => {
 
 
 
-/** ========== flush ========== */
-function flush(): void {
-    if (main.dirty.size == 0) return;
+/**
+ *  flush during tick loop iteration of canvases
+ *  Single loop at 20Hz iterating all resident canvases and flush
+ *  */
+function flushAll(): void {
+    for (const canvas of allResident()) {
+        if (canvas.dirty.size === 0) return;
 
-    const pixels: Pixel[] = []
-    for (const [boardIdx, colour] of main.dirty) {
-        pixels.push({ x: boardIdx % main.w, y: Math.floor(boardIdx / main.w), colour})
-    }
-    main.dirty.clear();
-
-    const payload = encodeDelta(pixels);
-
-    const dead: WebSocket[] = [];
-    for (const client of clients) {
-        try{
-            client.send(payload);
-        } catch {
-            dead.push(client);
+        const pixels: Pixel[] = []
+        for (const [boardIdx, colour] of canvas.dirty) {
+            pixels.push({ x: boardIdx % canvas.w, y: Math.floor(boardIdx / canvas.w), colour })
         }
-    }
-    // always remove AFTER marked dead, not during dead
-    for (const d of dead) {
-        clients.delete(d);
+        canvas.dirty.clear();
+
+        broadcast(canvas, encodeDelta(pixels));
     }
 }
 
 
 /** should run once after everything is wired up */
 app.addHook("onReady", async () => {
-    startTicker(flush);
+    startTicker(flushAll);
     app.log.info(`ticking at ${TICK_HZ}Hz`);
 })
 

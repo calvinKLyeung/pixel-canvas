@@ -16,7 +16,8 @@ const overlayElem = document.getElementById("overlay") as HTMLCanvasElement;
 // https : wss   http : ws
 const protocol = location.protocol === "https:" ? "wss:" : "ws:";
 // sends the upgrade request, causes the 101
-const sock = new WebSocket(`${protocol}//${location.host}/ws`);
+const canvasId = new URLSearchParams(location.search).get("c") ?? "main";
+const sock = new WebSocket(`${protocol}//${location.host}/ws?c=${encodeURIComponent(canvasId)}`);
 // !!! ensure sock uses array buffer instead of default Blob that require async !!!
 sock.binaryType = "arraybuffer";
 
