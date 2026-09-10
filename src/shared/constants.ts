@@ -1,6 +1,3 @@
-// export const W = 256;
-// export const H = 256;
-
 // default W and H for new canvas
 export const DEFAULT_W = 256;
 export const DEFAULT_H = 256;

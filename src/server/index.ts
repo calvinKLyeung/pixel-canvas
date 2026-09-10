@@ -95,7 +95,7 @@ app.get("/board.png", async (req, reply) => {
     const scale = Math.min(Math.max(Number(qs.scale) || 4, 1), 16);
     const grid = qs.grid === "1";
     const alpha = qs.alpha === "1";
-    // scale=1 means unscaled 256x256 img
+    // scale=1 means unscaled, one image pixel per board pixel
     // format if client edits an export and re-import
 
     const png = await renderPng(main, scale, grid, alpha);
@@ -140,12 +140,6 @@ function encodeSnapshot(canvas: Canvas): Buffer {
     header.writeUInt16LE(canvas.h, 3);    // byte 3-4  16 bits
     return Buffer.concat([header, deflateSync(canvas.board)]);
 }
-
-
-
-
-
-
 
 /** Always Last */
 await app.listen({ port: PORT, host: "0.0.0.0" });
