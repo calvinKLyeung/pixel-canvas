@@ -1,5 +1,7 @@
 import WebSocket from "ws";
-import { W, H } from "./shared/constants.js";
+// bots only hit `main`, so its defaults are the real dimensions.
+// milestone 06 spreads bots across canvases - read w/h from the SNAPSHOT header then.
+import { DEFAULT_W, DEFAULT_H } from "./shared/constants.js";
 import { PALETTE_SIZE } from "./shared/palette.js";
 import { encodePlace } from "./shared/protocols.js";
 
@@ -18,8 +20,8 @@ async function bot(id: number) {
     setInterval(() => {
         if (ws.readyState !== WebSocket.OPEN) return;
         ws.send(encodePlace({
-            x: Math.floor(Math.random() * W),
-            y: Math.floor(Math.random() * H),
+            x: Math.floor(Math.random() * DEFAULT_W),
+            y: Math.floor(Math.random() * DEFAULT_H),
             colour: Math.floor(Math.random() * PALETTE_SIZE),
         }));
         sent += 1;

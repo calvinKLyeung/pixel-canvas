@@ -1,17 +1,24 @@
-import { W, H } from "../shared/constants.js"
-
 let overlay: HTMLCanvasElement;
 let overlayContext: CanvasRenderingContext2D;
 
+/** Board dimensions of the canvas we're on. Held here because the ResizeObserver
+ * calls drawGrid() with no arguments. */
+let boardW = 0, boardH = 0;
+let observer: ResizeObserver | undefined;
+
 const MIN_CELL_PX = 4; // anything lower looks like shit
 
-export function initOverlay(element: HTMLCanvasElement) {
+export function initOverlay(element: HTMLCanvasElement, w: number, h: number) {
     overlay = element;
     overlayContext = element.getContext("2d")!;
+    boardW = w;
+    boardH = h;
     resizeOverlay();
 
     // ony changes if the geometry does
-    new ResizeObserver(resizeOverlay).observe(element.parentElement!);
+    // reuse one observer - initOverlay runs again whenever the board dimensions change
+    observer ??= new ResizeObserver(resizeOverlay);
+    observer.observe(element.parentElement!);
 }
 
 export function resizeOverlay() {
@@ -30,7 +37,7 @@ export function resizeOverlay() {
 
 export function drawGrid() {
     const rect = overlay.getBoundingClientRect();
-    const cell = rect.width / W;
+    const cell = rect.width / boardW;
 
     overlayContext.clearRect(0, 0, rect.width, rect.height);
     if (cell < MIN_CELL_PX) return;         // too dense to be useful
@@ -39,11 +46,11 @@ export function drawGrid() {
     overlayContext.lineWidth = 1;
     overlayContext.strokeStyle = "rgba(128,128,128,0.35)";
     overlayContext.beginPath();
-    for (let x = 0; x <= W; x++) {
+    for (let x = 0; x <= boardW; x++) {
         const px = Math.round(x * cell) + 0.5;
         overlayContext.moveTo(px, 0); overlayContext.lineTo(px, rect.height);
     }
-    for (let y = 0; y <= H; y++) {
+    for (let y = 0; y <= boardH; y++) {
         const py = Math.round(y * cell) + 0.5;
         overlayContext.moveTo(0, py); overlayContext.lineTo(rect.width, py);
     }

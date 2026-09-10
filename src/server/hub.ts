@@ -1,12 +1,3 @@
-/** map which pixels changed since the last flush, key = board index, val = colour
- * Buffer collecting all pending outbound updates from clicks */
-export const dirty = new Map<number, number>();
-
-/** Last write wins */
-export function markDirty(idx: number, colour: number) {
-    dirty.set(idx, colour);
-}
-
 /** frequency of sending out batch of updates back to client */
 export const TICK_HZ = 20;
 

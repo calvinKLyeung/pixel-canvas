@@ -4,10 +4,10 @@ import websocket from "@fastify/websocket"
 import fastifyStatic from "@fastify/static";
 import { join } from "node:path";
 
-import { W, H, index} from "../shared/constants.js";
+import { DEFAULT_W, DEFAULT_H, index} from "../shared/constants.js";
 import { PALETTE_SIZE } from "../shared/palette.js";
-import { board } from "./board.js";
-import { dirty, markDirty, TICK_HZ, startTicker } from "./hub.js";
+import { createCanvas, putResident, type Canvas } from "./canvas.js";
+import { TICK_HZ, startTicker } from "./hub.js";
 import { deflateSync } from "node:zlib";
 import { renderPng } from "./export.js";
 import { MSG, viewOf, decodePlace, encodeDelta, type Pixel } from "../shared/protocols.js";
@@ -27,11 +27,24 @@ await app.register(websocket);
 /** All currently connected browsers */
 const clients = new Set<WebSocket>();
 
+/** The permanent default canvas. 04b.6 picks the canvas from the URL instead. */
+const main: Canvas = createCanvas({
+    id: "main",
+    name: "main",
+    w: DEFAULT_W,
+    h: DEFAULT_H,
+    cooldownMs: 0,
+    ownerId: null,
+    isPublic: true,
+    createdAt: Date.now(),
+});
+putResident(main);
+
 app.get("/ws", { websocket: true }, (sock: WebSocket) => {
     // add socket to clients
     clients.add(sock);
     // sock.send(JSON.stringify({ t: "snapshot", board: Array.from(board) }));
-    sock.send(encodeSnapshot());
+    sock.send(encodeSnapshot(main));
     app.log.info(`connected - now have ${clients.size} websockets in total`);
 
 
@@ -49,11 +62,11 @@ app.get("/ws", { websocket: true }, (sock: WebSocket) => {
 
         // Types no longer exists at runtime, have to validate everything coming from the wire
         // drop out of bound numbers
-        if (x >= W || y >= H || colour >= PALETTE_SIZE) return;
+        if (x >= main.w || y >= main.h || colour >= PALETTE_SIZE) return;
 
-        const idx = index(x, y);
-        board[idx] = colour;
-        markDirty(idx, colour);
+        const idx = index(x, y, main.w);
+        main.board[idx] = colour;
+        main.dirty.set(idx, colour);    // last write wins
     });
 
     sock.on("close", () => {
@@ -79,7 +92,7 @@ app.get("/board.png", async (req, reply) => {
     // scale=1 means unscaled 256x256 img
     // format if client edits an export and re-import
 
-    const png = await renderPng(scale, grid, alpha);
+    const png = await renderPng(main, scale, grid, alpha);
     return reply
         .type("image/png") // this matters, tell the browser this is an image and not binary garbage
         .header("Cache-Control", "no-cache") // stop app pinning stale canvas when using the img
@@ -90,13 +103,13 @@ app.get("/board.png", async (req, reply) => {
 
 /** ========== flush ========== */
 function flush(): void {
-    if (dirty.size == 0) return;
+    if (main.dirty.size == 0) return;
 
     const pixels: Pixel[] = []
-    for (const [boardIdx, colour] of dirty) {
-        pixels.push({ x: boardIdx % W, y: Math.floor(boardIdx / W), colour})
+    for (const [boardIdx, colour] of main.dirty) {
+        pixels.push({ x: boardIdx % main.w, y: Math.floor(boardIdx / main.w), colour})
     }
-    dirty.clear();
+    main.dirty.clear();
 
     const payload = encodeDelta(pixels);
 
@@ -122,12 +135,12 @@ app.addHook("onReady", async () => {
 })
 
 // build the snapshot of the board with header and compressed board data
-function encodeSnapshot(): Buffer {
-    const header = Buffer.alloc(5);     // need 5 bytes
-    header.writeUInt8(MSG.SNAPSHOT, 0); // byte 0    8  bits
-    header.writeUInt16LE(W, 1);         // byte 1-2  16 bits
-    header.writeUInt16LE(H, 3);         // byte 3-4  16 bits
-    return Buffer.concat([header, deflateSync(board)]);
+function encodeSnapshot(canvas: Canvas): Buffer {
+    const header = Buffer.alloc(5);       // need 5 bytes
+    header.writeUInt8(MSG.SNAPSHOT, 0);   // byte 0    8  bits
+    header.writeUInt16LE(canvas.w, 1);    // byte 1-2  16 bits
+    header.writeUInt16LE(canvas.h, 3);    // byte 3-4  16 bits
+    return Buffer.concat([header, deflateSync(canvas.board)]);
 }
 
 

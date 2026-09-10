@@ -1,7 +1,7 @@
 import sharp from "sharp";
-import { W, H } from "../shared/constants.js";
+import { index } from "../shared/constants.js";
 import { PALETTE, EMPTY } from "../shared/palette.js";
-import { board } from "./board.js";
+import type { Canvas } from "./canvas.js";
 
 /**
  * Svg constructor, where we iterate through all the cells, when we see a vertical edge where either left or right is
@@ -10,18 +10,20 @@ import { board } from "./board.js";
  * size them to the OUTPUT image
  * if we have consecutive edges, they are merged into a single edge
  * */
-function gridSvg(scale: number): Buffer {
+function gridSvg(canvas: Canvas, scale: number): Buffer {
+    const { w, h, board } = canvas;
+
     const painted = (x: number, y: number): boolean =>
-        x >= 0 && y >= 0 && x < W && y < H && board[y * W + x] !== EMPTY;
+        x >= 0 && y >= 0 && x < w && y < h && board[index(x, y, w)] !== EMPTY;
 
     const d: string[] = [];
 
     // handle Vertical edges at each column boundary
-    for (let x = 0; x <= W; x++) {
+    for (let x = 0; x <= w; x++) {
         let start = -1;
-        for (let y = 0; y <= H; y++) {
+        for (let y = 0; y <= h; y++) {
             // does this boundary touch painted cell
-            const need = y < H && (painted(x - 1, y) || painted(x, y)); // (x-1,y)|(x,y)
+            const need = y < h && (painted(x - 1, y) || painted(x, y)); // (x-1,y)|(x,y)
             if (need && start === -1) {
                 start = y;
             } else if (!need && start !== -1) {
@@ -31,11 +33,11 @@ function gridSvg(scale: number): Buffer {
         }
     }
     // handle Horizontal edges at each row boundary
-    for (let y = 0; y <= H; y++) {
+    for (let y = 0; y <= h; y++) {
         let start = -1;
-        for (let x = 0; x <= W; x++) {
+        for (let x = 0; x <= w; x++) {
             // does this boundary touch painted cell
-            const need = x < W && (painted(x, y - 1) || painted(x, y)); // (x,y-1)/(x,y)
+            const need = x < w && (painted(x, y - 1) || painted(x, y)); // (x,y-1)/(x,y)
             if (need && start === -1) {
                 start = x;
             } else if (!need && start !== -1) {
@@ -46,7 +48,7 @@ function gridSvg(scale: number): Buffer {
     }
 
     return Buffer.from(
-        `<svg width="${W * scale}" height="${H * scale}" xmlns="http://www.w3.org/2000/svg">
+        `<svg width="${w * scale}" height="${h * scale}" xmlns="http://www.w3.org/2000/svg">
        <path d="${d.join("")}" stroke="rgba(90,90,90,0.5)" stroke-width="1" fill="none"/>
      </svg>`
     );
@@ -56,12 +58,14 @@ function gridSvg(scale: number): Buffer {
  * Rendering png file
  * */
 export async function renderPng(
-    scale = 4, grid = false, alpha = false,
+    canvas: Canvas, scale = 4, grid = false, alpha = false,
 ): Promise<Buffer> {
+    const { w, h, board } = canvas;
+
     // Build the pixels
     // RGBA. EMPTY = unpainted: transparent when alpha On, white when alpha Off.
     // Index 0 is ordinary paintable white and always renders opaque.
-    const rgba = Buffer.alloc(W * H * 4);   // zero fills
+    const rgba = Buffer.alloc(w * h * 4);   // zero fills
     for (let i = 0; i < board.length; i++) {
         const idx = board[i]!;
         if (idx === EMPTY) {
@@ -79,14 +83,14 @@ export async function renderPng(
         rgba[i * 4 + 3] = 255;      // alpha
     }
     // FIRST resize
-    let img = sharp(rgba, { raw: {width: W, height: H, channels: 4 } })
-        .resize(W * scale, H * scale, { kernel: "nearest"});
+    let img = sharp(rgba, { raw: {width: w, height: h, channels: 4 } })
+        .resize(w * scale, h * scale, { kernel: "nearest"});
 
     // THEN composite
     // after the resize is done, so the grid lines will stay 1px in the output img
     if (grid && scale >= 4) {
         img = sharp(await img.png().toBuffer())
-            .composite([{ input: gridSvg(scale), blend: "over"}]);  // Need these steps as composite happens BEFORE resize in chain
+            .composite([{ input: gridSvg(canvas, scale), blend: "over"}]);  // Need these steps as composite happens BEFORE resize in chain
     }
 
     // grid = false

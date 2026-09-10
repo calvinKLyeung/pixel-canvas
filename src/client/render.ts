@@ -1,4 +1,3 @@
-import { W, H} from "../shared/constants.js"
 import { PALETTE, EMPTY } from "../shared/palette.js"
 
 const WHITE: readonly [number, number, number] = [255, 255, 255];
@@ -6,13 +5,14 @@ const WHITE: readonly [number, number, number] = [255, 255, 255];
 let context: CanvasRenderingContext2D;
 let imageData: ImageData;
 
-export function initRenderer(canvas: HTMLCanvasElement) {
+/** Dimensions come from the SNAPSHOT header - the client never assumes a size. */
+export function initRenderer(canvas: HTMLCanvasElement, w: number, h: number) {
     // render pixel grid as our canvas
-    canvas.width = W;
-    canvas.height = H;
+    canvas.width = w;
+    canvas.height = h;
     context = canvas.getContext("2d")!;
     context.imageSmoothingEnabled = false;
-    imageData = context.createImageData(W, H);
+    imageData = context.createImageData(w, h);
 }
 
 /** represent RGBA which */

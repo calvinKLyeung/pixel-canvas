@@ -1,6 +1,6 @@
-import { W, H, index} from "../shared/constants.js";
+import { index} from "../shared/constants.js";
 import { line } from "../shared/line.js";
-import { cssColour, PALETTE, EMPTY } from "../shared/palette.js";
+import { cssColour, PALETTE } from "../shared/palette.js";
 import { initRenderer, render } from "./render.js";
 import { initOverlay } from "./overlay.js";
 
@@ -11,6 +11,7 @@ import { inflate } from "./decode.js";
 
 const statusElem = document.getElementById("status")!;
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+const overlayElem = document.getElementById("overlay") as HTMLCanvasElement;
 
 // https : wss   http : ws
 const protocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -20,11 +21,9 @@ const sock = new WebSocket(`${protocol}//${location.host}/ws`);
 sock.binaryType = "arraybuffer";
 
 
-// board
-const board: Uint8Array  = new Uint8Array(W * H).fill(EMPTY);
-initRenderer(canvas);
-initOverlay(document.getElementById("overlay") as HTMLCanvasElement)
-render(board); // paint white board with rendered RGBA
+// board - size is unknown until the SNAPSHOT header arrives, so nothing to draw yet
+let board: Uint8Array | null = null;
+let boardW = 0, boardH = 0;
 
 /** Send out PLACE pixel */
 function sendPlace(x: number, y: number, colour: number) {
@@ -36,7 +35,8 @@ function sendPlace(x: number, y: number, colour: number) {
 /**========== callbacks reacting to lifecycle events ==========*/
 
 sock.addEventListener("open", (msg) => {
-    statusElem.textContent = "connected";
+    // the canvas stays blank until the snapshot lands - say so, it isn't broken
+    statusElem.textContent = "connected - loading canvas";
 });
 
 
@@ -60,15 +60,24 @@ sock.addEventListener("message", async (e) => {
                 console.error(`bad snapshot: got ${pixels.length}, when expecting ${w * h}`);
                 return;
             }
-            // valid case
+            // valid case - (re)size everything to whatever board the server sent
+            if (!board || boardW !== w || boardH !== h) {
+                boardW = w;
+                boardH = h;
+                board = new Uint8Array(w * h);
+                initRenderer(canvas, w, h);
+                initOverlay(overlayElem, w, h);
+            }
             board.set(pixels);
             render(board);
+            statusElem.textContent = "connected";
             break;
         }
         // server -> client, Place pixels
         case MSG.DELTA: {
+            if (!board) return;     // deltas before the snapshot have nowhere to land
             for (const pixel of decodeDelta(view)) {
-                board[index(pixel.x, pixel.y)] = pixel.colour;
+                board[index(pixel.x, pixel.y, boardW)] = pixel.colour;
             }
             render(board);  // only do once per message, not pixel, render after pixels are settled
             break;
@@ -115,10 +124,11 @@ let drawing = false;
 let lastX = -1, lastY = -1;
 
 function toBoard(e: PointerEvent): [number, number] | null {
+    if (!board) return null;    // no snapshot yet, nothing to paint on
     const rectangle = canvas.getBoundingClientRect();
-    const x = Math.floor((e.clientX - rectangle.left) / rectangle.width * W);
-    const y = Math.floor((e.clientY - rectangle.top) / rectangle.height * H);
-    return (x < 0 || x >= W || y < 0 || y >= H) ? null : [x, y];
+    const x = Math.floor((e.clientX - rectangle.left) / rectangle.width * boardW);
+    const y = Math.floor((e.clientY - rectangle.top) / rectangle.height * boardH);
+    return (x < 0 || x >= boardW || y < 0 || y >= boardH) ? null : [x, y];
 }
 
 canvas.addEventListener("pointerdown", (e) => {
