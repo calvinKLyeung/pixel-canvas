@@ -7,11 +7,16 @@ import { join } from "node:path";
 
 import { DEFAULT_W, DEFAULT_H, index} from "../shared/constants.js";
 import { PALETTE_SIZE } from "../shared/palette.js";
-import {createCanvas, putResident, getResident, addClient, removeClient, broadcast, type Canvas, allResident} from "./canvas.js";
+import {
+    createCanvas, putResident, getResident, addClient, removeClient, broadcast, type Canvas, allResident,
+    newCanvasId,
+    type CanvasConfig
+} from "./canvas.js";
 import { TICK_HZ, startTicker } from "./hub.js";
 import { deflateSync } from "node:zlib";
 import { renderPng } from "./export.js";
 import { MSG, viewOf, decodePlace, encodeDelta, type Pixel } from "../shared/protocols.js";
+import {type CreateRequest, validateCreate} from "../shared/canvasConfig";
 
 
 
@@ -105,6 +110,45 @@ app.get("/board.png", async (req, reply) => {
         .send(png);
 })
 
+app.post("/api/canvas", async (req, reply) => {
+    const error = validateCreate(req.body);
+    if (error) return reply.code(400).send({ error: error });
+
+    // const user = userFromToken(req.cookies?.session); // always null for now
+    const { name, w, h, cooldownMs } = req.body as CreateRequest;
+
+    const cfg: CanvasConfig = {
+        id: newCanvasId(),
+        name,
+        w,
+        h,
+        cooldownMs,
+        // ownerId: user?.id ?? null,
+        ownerId: null,
+        isPublic: true,
+        createdAt: Date.now(),
+    }
+
+    // await saveCanvasConfig(cfg);    // TODO: make the save an persistent storage
+    putResident(createCanvas(cfg));    // add to current resident
+
+    return { id: cfg.id };
+});
+
+
+// app.get("/api/canvases", async () => listPublicCanvases(?));
+app.get("/api/canvases", async () => {
+    return [...allResident()]
+        .filter(c => c.isPublic)
+        .slice(0, 40)
+        .map(c => ({
+            id: c.id,
+            name: c.name,
+            w: c.w,
+            h: c.h,
+            clients: c.clients.size
+        }));
+});
 
 
 /**
@@ -113,7 +157,7 @@ app.get("/board.png", async (req, reply) => {
  *  */
 function flushAll(): void {
     for (const canvas of allResident()) {
-        if (canvas.dirty.size === 0) return;
+        if (canvas.dirty.size === 0) continue;
 
         const pixels: Pixel[] = []
         for (const [boardIdx, colour] of canvas.dirty) {

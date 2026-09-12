@@ -1,5 +1,6 @@
 import type { WebSocket} from "ws";
 import { EMPTY } from "../shared/palette.js"
+import { randomBytes } from "node:crypto";
 
 // mainly for SQL in the future
 export interface CanvasConfig {
@@ -93,6 +94,17 @@ export function broadcast(canvas: Canvas, payload: Uint8Array) {
     for (const d of dead) {
         removeClient(d);
     }
+}
+
+
+/** Canvas id generator */
+// no vowels, no 0/O/1/I/l
+const ALPHABET = "23456789bcdfghjkmnpqrstvwxz";
+
+export function newCanvasId(): string {
+    const bytes = randomBytes(8);  // 8 bytes
+    // map each byte to alpha
+    return [...bytes].map( byte => ALPHABET[byte % ALPHABET.length]).join('');
 }
 
 
