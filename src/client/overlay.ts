@@ -7,6 +7,8 @@ let boardW = 0, boardH = 0;
 let observer: ResizeObserver | undefined;
 
 const MIN_CELL_PX = 4; // anything lower looks like shit
+const COARSE_CELL_PX = 8; // coarse grid needs more room than the fine one
+const COARSE_STEP = 16;   // every 16 cells
 
 export function initOverlay(element: HTMLCanvasElement, w: number, h: number) {
     overlay = element;
@@ -52,6 +54,22 @@ export function drawGrid() {
         overlayContext.moveTo(px, 0); overlayContext.lineTo(px, rect.height);
     }
     for (let y = 0; y <= boardH; y++) {
+        const py = Math.round(y * cell) + 0.5;
+        overlayContext.moveTo(0, py); overlayContext.lineTo(rect.width, py);
+    }
+    overlayContext.stroke();
+
+    // Coarse grid every 16 cells, for orientation. Only when there is room for it,
+    // otherwise the two grids sit on top of each other and just look muddy.
+    if (cell < COARSE_CELL_PX) return;
+
+    overlayContext.strokeStyle = "rgba(60,60,60,0.45)";
+    overlayContext.beginPath();
+    for (let x = 0; x <= boardW; x += COARSE_STEP) {
+        const px = Math.round(x * cell) + 0.5;
+        overlayContext.moveTo(px, 0); overlayContext.lineTo(px, rect.height);
+    }
+    for (let y = 0; y <= boardH; y += COARSE_STEP) {
         const py = Math.round(y * cell) + 0.5;
         overlayContext.moveTo(0, py); overlayContext.lineTo(rect.width, py);
     }

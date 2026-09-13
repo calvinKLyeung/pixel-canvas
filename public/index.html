@@ -8,7 +8,25 @@
     <meta property="og:image" content="http://localhost:8000/board.png">
     <link rel="stylesheet"
           href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-    <title></title>
+    <style>
+      /* Checkerboard for unpainted cells, which render() leaves transparent.
+         Two 45deg gradients offset by half a tile is the standard trick: each paints
+         one diagonal stripe pattern, the 8px offset fills the other's gaps.
+         Lives on #stage, BEHIND the canvas - so it does not scale with the board and
+         is not recomputed on every render. 16px is fixed on purpose: the checker is a
+         visual convention, not data, so it should read the same at any board size. */
+      #stage {
+        background-color: #f7f7f7;
+        background-image:
+          linear-gradient(45deg, #e2e2e2 25%, transparent 25%,
+                                 transparent 75%, #e2e2e2 75%),
+          linear-gradient(45deg, #e2e2e2 25%, transparent 25%,
+                                 transparent 75%, #e2e2e2 75%);
+        background-size: 16px 16px;
+        background-position: 0 0, 8px 8px;
+      }
+    </style>
+    <title>Pixel canvas</title>
   </head>
   <body>
     <main class="container">
