@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<script type="module" src="/lobby.js"></script>
+  <head>
+    <meta charset="utf-8">
+    <meta property="og:title" content="Pixel canvas">
+    <meta property="og:description" content="A shared canvas anyone can paint on.">
+    <link rel="stylesheet"
+          href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <title>Canvases</title>
+  </head>
+  <body>
+    <main class="container">
+      <h1>Canvases</h1>
+      <ul id="list"></ul>
+
+      <h2>New canvas</h2>
+      <form id="create">
+        <label>Name
+          <input name="name" maxlength="40" required>
+        </label>
+        <div class="grid">
+          <label>Width
+            <input name="w" type="number" required>
+          </label>
+          <label>Height
+            <input name="h" type="number" required>
+          </label>
+          <label>Cooldown (seconds)
+            <input name="cooldown" type="number" value="1" required>
+          </label>
+        </div>
+        <p id="error" style="color:var(--pico-del-color)"></p>
+        <button type="submit">Create</button>
+      </form>
+    </main>
+  </body>
+</html>
