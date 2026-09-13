@@ -1,5 +1,6 @@
 node_modules/
-public/main.js
+# esbuild output - one file per entry point in build:client, so match them all
+public/*.js
 *.db
 *.db-wal
 *.db-shm

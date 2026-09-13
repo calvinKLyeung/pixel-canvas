@@ -16,7 +16,7 @@ import { TICK_HZ, startTicker } from "./hub.js";
 import { deflateSync } from "node:zlib";
 import { renderPng } from "./export.js";
 import { MSG, viewOf, decodePlace, encodeDelta, MAX_DELTA_PIXELS, type Pixel } from "../shared/protocols.js";
-import {type CreateRequest, validateCreate} from "../shared/canvasConfig";
+import {type CreateRequest, validateCreate} from "../shared/canvasConfig.js";
 
 
 

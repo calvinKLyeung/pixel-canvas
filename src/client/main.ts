@@ -1,6 +1,6 @@
 import { index} from "../shared/constants.js";
 import { line } from "../shared/line.js";
-import { cssColour, PALETTE } from "../shared/palette.js";
+import { cssColour, PALETTE, EMPTY } from "../shared/palette.js";
 import { initRenderer, render } from "./render.js";
 import { initOverlay } from "./overlay.js";
 
@@ -71,7 +71,9 @@ sock.addEventListener("message", async (e) => {
             if (!board || boardW !== w || boardH !== h) {
                 boardW = w;
                 boardH = h;
-                board = new Uint8Array(w * h);
+                // EMPTY, not 0 - 0 is paintable white. The snapshot overwrites this
+                // immediately, but the board must never be briefly all-white.
+                board = new Uint8Array(w * h).fill(EMPTY);
                 initRenderer(canvas, w, h);
                 initOverlay(overlayElem, w, h);
             }
@@ -148,6 +150,9 @@ canvas.addEventListener("pointerdown", (e) => {
     sendPlace(pos[0], pos[1], selectedColour); // paint the pixel with selected Colour
 })
 
+// TODO milestone 05: a cooldown makes drag useless - a one-second stroke is ~100
+// placements and almost all come back REJECTED. Live mode goes click-only there, and
+// drag moves to the 05b draft layer where painting is free.
 canvas.addEventListener("pointermove", (e) => {
     if (!drawing) return;
     const pos = toBoard(e);
