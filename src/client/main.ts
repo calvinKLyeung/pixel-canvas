@@ -18,6 +18,12 @@ const protocol = location.protocol === "https:" ? "wss:" : "ws:";
 // sends the upgrade request, causes the 101
 const canvasId = new URLSearchParams(location.search).get("c") ?? "main";
 const sock = new WebSocket(`${protocol}//${location.host}/ws?c=${encodeURIComponent(canvasId)}`);
+
+// The download links are static HTML, so point them at the canvas we are actually on
+for (const id of ["download", "download-grid"]) {
+    const link = document.getElementById(id) as HTMLAnchorElement;
+    link.href += `&c=${encodeURIComponent(canvasId)}`;
+}
 // !!! ensure sock uses array buffer instead of default Blob that require async !!!
 sock.binaryType = "arraybuffer";
 

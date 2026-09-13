@@ -15,7 +15,7 @@ import {
 import { TICK_HZ, startTicker } from "./hub.js";
 import { deflateSync } from "node:zlib";
 import { renderPng } from "./export.js";
-import { MSG, viewOf, decodePlace, encodeDelta, type Pixel } from "../shared/protocols.js";
+import { MSG, viewOf, decodePlace, encodeDelta, MAX_DELTA_PIXELS, type Pixel } from "../shared/protocols.js";
 import {type CreateRequest, validateCreate} from "../shared/canvasConfig";
 
 
@@ -93,17 +93,24 @@ app.get("/ws", { websocket: true }, (sock: WebSocket, req: FastifyRequest) => {
 
 app.get("/board.png", async (req, reply) => {
     // relabel unknown data in query to known strings
-    const qs = req.query as { scale?: string; grid?: string; alpha?: string };
+    const qs = req.query as { c?: string; scale?: string; grid?: string; alpha?: string };
+
+    // same ?c= as /ws - without this every canvas exports main's board
+    const canvas = getResident(qs.c ?? "main");
+    if (!canvas) return reply.code(404).send({ error: "no such canvas" });
 
     // clamp everything from query string
     // scale too big will allocate too many pixels to img and kill the process lol
     const scale = Math.min(Math.max(Number(qs.scale) || 4, 1), 16);
     const grid = qs.grid === "1";
-    const alpha = qs.alpha === "1";
+    // Transparent by default, so a download matches the checkerboard on screen.
+    // og:image is the exception and passes alpha=0: Discord and Slack composite a
+    // transparent PNG onto their own background, where dark art vanishes in dark mode.
+    const alpha = qs.alpha !== "0";
     // scale=1 means unscaled, one image pixel per board pixel
     // format if client edits an export and re-import
 
-    const png = await renderPng(main, scale, grid, alpha);
+    const png = await renderPng(canvas, scale, grid, alpha);
     return reply
         .type("image/png") // this matters, tell the browser this is an image and not binary garbage
         .header("Cache-Control", "no-cache") // stop app pinning stale canvas when using the img
@@ -165,7 +172,12 @@ function flushAll(): void {
         }
         canvas.dirty.clear();
 
-        broadcast(canvas, encodeDelta(pixels));
+        // The DELTA count is a u16, so a tick that dirties more pixels than that has to
+        // go out as several frames - one oversized frame would wrap the count to 0 and
+        // the client would drop every pixel in it silently.
+        for (let i = 0; i < pixels.length; i += MAX_DELTA_PIXELS) {
+            broadcast(canvas, encodeDelta(pixels.slice(i, i + MAX_DELTA_PIXELS)));
+        }
     }
 }
 

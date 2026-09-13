@@ -5,7 +5,8 @@
     <meta charset="utf-8">
     <meta property="og:title" content="Pixel canvas">
     <meta property="og:description" content="A shared canvas anyone can paint on.">
-    <meta property="og:image" content="http://localhost:8000/board.png">
+    <!-- alpha=0 on purpose: link previews must stay opaque, see the route in index.ts -->
+    <meta property="og:image" content="http://localhost:8000/board.png?alpha=0">
     <link rel="stylesheet"
           href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <style>
@@ -42,9 +43,10 @@
             width:100%;height:100%;pointer-events:none"></canvas>
       </div>
       <div id="palette"></div>
-      <a href="/board.png?scale=8&amp;alpha=1" download="canvas.png"
+      <!-- main.ts appends the canvas id; alpha is left at its transparent default -->
+      <a id="download" href="/board.png?scale=8" download="canvas.png"
          role="button">Download PNG</a>
-      <a href="/board.png?scale=8&amp;alpha=1&amp;grid=1" download="canvas-grid.png"
+      <a id="download-grid" href="/board.png?scale=8&amp;grid=1" download="canvas-grid.png"
          role="button" class="secondary">With grid</a>
     </main>
   </body>

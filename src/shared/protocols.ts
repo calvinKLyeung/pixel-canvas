@@ -10,10 +10,16 @@
  *      ... zlib deflated board of bytes, one per pixel
  */
 // type def
+// 4-6 are claimed now but nothing sends them until 05 / 05c. Milestone 08's event log
+// stamps every entry with one of these ids and is append-only, so settling the
+// numbering before the log exists is free - renumbering afterwards is not.
 type MsgShape = {
     readonly PLACE:    1;
     readonly DELTA:    2;
     readonly SNAPSHOT: 3;
+    readonly REJECTED: 4;  // 05,  cooldown refusal
+    readonly CLEAR:    5;  // 05c, owner canvas reset
+    readonly PRESENCE: 6;  // optional, connected-user count
 };
 
 // runtime values
@@ -21,10 +27,22 @@ export const MSG: MsgShape = {
     PLACE:    1,
     DELTA:    2,
     SNAPSHOT: 3,
+    REJECTED: 4,
+    CLEAR:    5,
+    PRESENCE: 6,
 };
 
 // our sum type build from the defined obj of MSG
-export type MsgType = MsgShape[keyof MsgShape]; // === export type MsgType = 1 | 2 | 3;
+export type MsgType = MsgShape[keyof MsgShape]; // === export type MsgType = 1 | 2 | ... | 6;
+
+/**
+ * Most pixels one DELTA can carry, because the count at offset 1 is a u16.
+ * A 512x512 canvas has 262,144 cells and `dirty` is keyed by board index, so one tick
+ * can hold more than this. Overflowing wraps the count silently - the frame still
+ * carries every pixel, but the client reads a short count and drops the rest with no
+ * error anywhere. The flush splits into this many at a time instead.
+ */
+export const MAX_DELTA_PIXELS = 65535;
 
 /**
  * Building DataView to interpret the bytes, from the container they arrive in
