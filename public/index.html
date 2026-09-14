@@ -11,20 +11,27 @@
           href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <style>
       /* Checkerboard for unpainted cells, which render() leaves transparent.
-         Two 45deg gradients offset by half a tile is the standard trick: each paints
-         one diagonal stripe pattern, the 8px offset fills the other's gaps.
          Lives on #stage, BEHIND the canvas - so it does not scale with the board and
          is not recomputed on every render. 16px is fixed on purpose: the checker is a
-         visual convention, not data, so it should read the same at any board size. */
+         visual convention, not data, so it should read the same at any board size.
+
+         One conic gradient per 16px tile = four exact 8px quadrants, alternating.
+         The usual two-45deg-gradient recipe builds each check out of corner triangles
+         and leans on a half-tile offset to interlock them, which leaves a bare triangle
+         at the origin where nothing overlaps it yet.
+
+         The tones are blue-grey, not neutral grey, and that is the whole point. Every
+         neutral in PALETTE is a pure grey - white 255, light grey 228, grey 136, black 34 -
+         so a neutral checkerboard collides with one of them on lightness alone. #d2d2d2
+         checks against index 1's #e4e4e4 was 18 levels apart and read as the same thing.
+         A blue cast cannot be confused with any of them at any brightness, and the
+         lightness also sits in the wide gap between index 1 and index 2.
+         Matters more than it looks: a board cell is ~3px on screen while a check is 8px,
+         so one painted pixel sits inside a single check with nothing to contrast against. */
       #stage {
-        background-color: #f7f7f7;
-        background-image:
-          linear-gradient(45deg, #e2e2e2 25%, transparent 25%,
-                                 transparent 75%, #e2e2e2 75%),
-          linear-gradient(45deg, #e2e2e2 25%, transparent 25%,
-                                 transparent 75%, #e2e2e2 75%);
+        background-color: #b6c3d0;  /* flat fallback if conic-gradient is unsupported */
+        background-image: repeating-conic-gradient(#a3b3c4 0% 25%, #c2ceda 0% 50%);
         background-size: 16px 16px;
-        background-position: 0 0, 8px 8px;
       }
     </style>
     <title>Pixel canvas</title>
