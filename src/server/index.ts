@@ -8,11 +8,12 @@ import { join } from "node:path";
 import { DEFAULT_W, DEFAULT_H, index} from "../shared/constants.js";
 import { PALETTE_SIZE } from "../shared/palette.js";
 import {
-    createCanvas, putResident, peekResident, loadCanvas, addClient, removeClient, broadcast, type Canvas, allResident,
+    peekResident, loadCanvas, addClient, removeClient, broadcast, type Canvas, allResident,
     newCanvasId, MAIN_ID,
     type CanvasConfig
 } from "./canvas.js";
-import { saveCanvasConfig, getCanvasConfig, listPublicCanvasConfigs } from "./db.js";
+import { saveCanvasConfig, listPublicCanvasConfigs } from "./db.js";
+import { persistDirty } from "./redis.js";
 import { TICK_HZ, startTicker } from "./hub.js";
 import { deflateSync } from "node:zlib";
 import { renderPng } from "./export.js";
@@ -35,7 +36,7 @@ await app.register(websocket);
  * main is the only canvas not created through POST /api/canvas, so nothing else ever
  * writes its config row - without this the landing page 4004s after a restart.
  */
-function ensureMain(): Canvas {
+async function ensureMain(): Promise<void> {
     saveCanvasConfig({
         id: MAIN_ID,
         name: MAIN_ID,
@@ -47,13 +48,13 @@ function ensureMain(): Canvas {
         createdAt: Date.now(),
     });
 
-    // Read back instead of reusing what we just passed: the save is a no-op if main
-    // already exists, and then the row on disk is the truth, not these defaults.
-    const cfg = getCanvasConfig(MAIN_ID);
-    if (!cfg) throw new Error(`could not read the ${MAIN_ID} config back after saving it`);
-    return createCanvas(cfg);
+    // The save is a no-op if main already exists, so let loadCanvas read the row back
+    // rather than trusting the defaults above: an existing main keeps its stored
+    // dimensions and the board people have already painted on it.
+    const canvas = await loadCanvas(MAIN_ID);
+    if (!canvas) throw new Error(`could not load ${MAIN_ID} after saving its config`);
 }
-putResident(ensureMain());
+await ensureMain();
 
 app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest) => {
     const id = (req.query as { c?: string }).c ?? MAIN_ID;
@@ -155,8 +156,8 @@ app.post("/api/canvas", async (req, reply) => {
         createdAt: Date.now(),
     }
 
-    saveCanvasConfig(cfg);             // SQLite, so it survives a restart. Synchronous - no await.
-    putResident(createCanvas(cfg));    // add to current resident
+    saveCanvasConfig(cfg);       // SQLite, so it survives a restart. Synchronous - no await.
+    await loadCanvas(cfg.id);    // makes it resident and writes its blank board to Redis
 
     return { id: cfg.id };
 });
@@ -185,11 +186,20 @@ function flushAll(): void {
     for (const canvas of allResident()) {
         if (canvas.dirty.size === 0) continue;
 
+        // Hand the persist its own map rather than clearing this one: a place arriving
+        // mid-flush then lands in the fresh map instead of one being drained.
+        const dirty = canvas.dirty;
+        canvas.dirty = new Map();
+
         const pixels: Pixel[] = []
-        for (const [boardIdx, colour] of canvas.dirty) {
+        for (const [boardIdx, colour] of dirty) {
             pixels.push({ x: boardIdx % canvas.w, y: Math.floor(boardIdx / canvas.w), colour })
         }
-        canvas.dirty.clear();
+
+        // Deliberately not awaited - the tick must not block on a network round trip. A
+        // failed write loses those pixels from storage but not from memory, and the next
+        // write to the same pixel repairs it.
+        persistDirty(canvas, dirty).catch(err => app.log.error(err, "persisting board failed"));
 
         // The DELTA count is a u16, so a tick that dirties more pixels than that has to
         // go out as several frames - one oversized frame would wrap the count to 0 and

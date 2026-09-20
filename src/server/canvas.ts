@@ -2,6 +2,7 @@ import type { WebSocket} from "ws";
 import { EMPTY } from "../shared/palette.js"
 import { randomBytes } from "node:crypto";
 import { getCanvasConfig } from "./db.js";
+import { loadBoard, writeBoard } from "./redis.js";
 
 /** The permanent landing canvas. Never created through the API, never evicted. */
 export const MAIN_ID = "main";
@@ -92,7 +93,17 @@ export async function loadCanvas(id: string): Promise<Canvas | null> {
         if (!cfg) return null;
 
         const canvas = createCanvas(cfg);
-        // 04b.10 restores the board bytes from Redis here. Blank until then.
+
+        const bytes = await loadBoard(id);
+        if (bytes?.length === cfg.w * cfg.h) {
+            canvas.board.set(bytes);
+        } else {
+            // Either nothing is stored yet, or what is stored was sized to different
+            // dimensions. Start blank and overwrite: writing single pixels into a key of
+            // the wrong length loads back as a board sheared diagonally.
+            await writeBoard(canvas);
+        }
+
         putResident(canvas);
         return canvas;
     })().finally(() => loading.delete(id));
