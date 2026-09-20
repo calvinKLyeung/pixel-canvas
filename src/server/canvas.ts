@@ -1,6 +1,10 @@
 import type { WebSocket} from "ws";
 import { EMPTY } from "../shared/palette.js"
 import { randomBytes } from "node:crypto";
+import { getCanvasConfig } from "./db.js";
+
+/** The permanent landing canvas. Never created through the API, never evicted. */
+export const MAIN_ID = "main";
 
 // mainly for SQL in the future
 export interface CanvasConfig {
@@ -47,12 +51,54 @@ export function getResident(id: string): Canvas | undefined {
     return canvas;
 }
 
+/**
+ * Read a resident canvas WITHOUT marking it active. For listings and metrics.
+ * getResident there would mean anyone sitting on the lobby page keeps every canvas
+ * listed on it alive, and the eviction sweep would never fire.
+ */
+export function peekResident(id: string): Canvas | undefined {
+    return resident.get(id);
+}
+
 export function putResident(c: Canvas) {
     resident.set(c.id, c);
 }
 
 export function allResident(): Iterable<Canvas> {
     return resident.values();
+}
+
+
+/** Loads currently in progress, keyed by canvas id. See loadCanvas. */
+const loading = new Map<string, Promise<Canvas | null>>();
+
+/**
+ * Get a canvas by id, hydrating it from storage if it is not resident.
+ * null means no such canvas has ever existed - a resident miss only means "not loaded".
+ */
+export async function loadCanvas(id: string): Promise<Canvas | null> {
+    const hit = getResident(id);
+    if (hit) return hit;
+
+    // Two clients joining an evicted canvas in the same tick must not both load it: the
+    // second putResident would replace the first's object, leaving the first client
+    // painting onto a Canvas nobody broadcasts to. Share one promise instead.
+    // (Request coalescing, or single-flight.)
+    const inflight = loading.get(id);
+    if (inflight) return inflight;
+
+    const load = (async (): Promise<Canvas | null> => {
+        const cfg = getCanvasConfig(id);
+        if (!cfg) return null;
+
+        const canvas = createCanvas(cfg);
+        // 04b.10 restores the board bytes from Redis here. Blank until then.
+        putResident(canvas);
+        return canvas;
+    })().finally(() => loading.delete(id));
+
+    loading.set(id, load);
+    return load;
 }
 
 

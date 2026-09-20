@@ -8,10 +8,11 @@ import { join } from "node:path";
 import { DEFAULT_W, DEFAULT_H, index} from "../shared/constants.js";
 import { PALETTE_SIZE } from "../shared/palette.js";
 import {
-    createCanvas, putResident, getResident, addClient, removeClient, broadcast, type Canvas, allResident,
-    newCanvasId,
+    createCanvas, putResident, peekResident, loadCanvas, addClient, removeClient, broadcast, type Canvas, allResident,
+    newCanvasId, MAIN_ID,
     type CanvasConfig
 } from "./canvas.js";
+import { saveCanvasConfig, getCanvasConfig, listPublicCanvasConfigs } from "./db.js";
 import { TICK_HZ, startTicker } from "./hub.js";
 import { deflateSync } from "node:zlib";
 import { renderPng } from "./export.js";
@@ -30,27 +31,43 @@ await app.register(fastifyStatic, {
 });
 await app.register(websocket);
 
-/** The permanent default canvas. 04b.6 picks the canvas from the URL instead. */
-const main: Canvas = createCanvas({
-    id: "main",
-    name: "main",
-    w: DEFAULT_W,
-    h: DEFAULT_H,
-    cooldownMs: 0,
-    ownerId: null,
-    isPublic: true,
-    createdAt: Date.now(),
-});
-putResident(main);
+/**
+ * main is the only canvas not created through POST /api/canvas, so nothing else ever
+ * writes its config row - without this the landing page 4004s after a restart.
+ */
+function ensureMain(): Canvas {
+    saveCanvasConfig({
+        id: MAIN_ID,
+        name: MAIN_ID,
+        w: DEFAULT_W,
+        h: DEFAULT_H,
+        cooldownMs: 0,
+        ownerId: null,
+        isPublic: true,
+        createdAt: Date.now(),
+    });
 
-app.get("/ws", { websocket: true }, (sock: WebSocket, req: FastifyRequest) => {
-    const id = (req.query as { c?: string }).c ?? "main";
+    // Read back instead of reusing what we just passed: the save is a no-op if main
+    // already exists, and then the row on disk is the truth, not these defaults.
+    const cfg = getCanvasConfig(MAIN_ID);
+    if (!cfg) throw new Error(`could not read the ${MAIN_ID} config back after saving it`);
+    return createCanvas(cfg);
+}
+putResident(ensureMain());
 
-    const canvas = getResident(id);
+app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest) => {
+    const id = (req.query as { c?: string }).c ?? MAIN_ID;
+
+    const canvas = await loadCanvas(id);
     if (!canvas) {
         sock.close(4004, "no such canvas");  // 4000-4999 is ours to define
         return;                              // reject before addClient, nothing to clean up
     }
+
+    // The load above is this handler's first await, so the client may have given up during
+    // it. Its close event has already fired, before the listener below exists to remove it,
+    // so adding it now would leave a dead socket in canvas.clients forever.
+    if (sock.readyState !== WebSocket.OPEN) return;
 
     // add socket to clients
     addClient(sock, canvas);
@@ -95,8 +112,10 @@ app.get("/board.png", async (req, reply) => {
     // relabel unknown data in query to known strings
     const qs = req.query as { c?: string; scale?: string; grid?: string; alpha?: string };
 
-    // same ?c= as /ws - without this every canvas exports main's board
-    const canvas = getResident(qs.c ?? "main");
+    // same ?c= as /ws - without this every canvas exports main's board.
+    // Loading an evicted canvas just to render it makes it resident again; the sweep
+    // drops it on the next pass, since a PNG request leaves no clients behind.
+    const canvas = await loadCanvas(qs.c ?? MAIN_ID);
     if (!canvas) return reply.code(404).send({ error: "no such canvas" });
 
     // clamp everything from query string
@@ -136,25 +155,25 @@ app.post("/api/canvas", async (req, reply) => {
         createdAt: Date.now(),
     }
 
-    // await saveCanvasConfig(cfg);    // TODO: make the save an persistent storage
+    saveCanvasConfig(cfg);             // SQLite, so it survives a restart. Synchronous - no await.
     putResident(createCanvas(cfg));    // add to current resident
 
     return { id: cfg.id };
 });
 
 
-// app.get("/api/canvases", async () => listPublicCanvases(?));
 app.get("/api/canvases", async () => {
-    return [...allResident()]
-        .filter(c => c.isPublic)
-        .slice(0, 40)
-        .map(c => ({
-            id: c.id,
-            name: c.name,
-            w: c.w,
-            h: c.h,
-            clients: c.clients.size
-        }));
+    // Lists what exists, not what is loaded - an evicted canvas is still a canvas, and
+    // before this the lobby quietly forgot every board nobody happened to be painting.
+    return listPublicCanvasConfigs(40).map(cfg => ({
+        id: cfg.id,
+        name: cfg.name,
+        w: cfg.w,
+        h: cfg.h,
+        // peek, not getResident: bumping lastActive here would mean an open lobby tab
+        // keeps every canvas on it resident and the sweep never evicts anything.
+        clients: peekResident(cfg.id)?.clients.size ?? 0,
+    }));
 });
 
 
