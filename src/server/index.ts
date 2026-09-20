@@ -9,7 +9,7 @@ import { DEFAULT_W, DEFAULT_H, index} from "../shared/constants.js";
 import { PALETTE_SIZE } from "../shared/palette.js";
 import {
     peekResident, loadCanvas, addClient, removeClient, broadcast, type Canvas, allResident,
-    newCanvasId, MAIN_ID,
+    newCanvasId, MAIN_ID, sweep,
     type CanvasConfig
 } from "./canvas.js";
 import { saveCanvasConfig, listPublicCanvasConfigs } from "./db.js";
@@ -183,38 +183,48 @@ app.get("/api/canvases", async () => {
  *  Single loop at 20Hz iterating all resident canvases and flush
  *  */
 function flushAll(): void {
-    for (const canvas of allResident()) {
-        if (canvas.dirty.size === 0) continue;
+    for (const canvas of allResident()) flushCanvas(canvas);
+}
 
-        // Hand the persist its own map rather than clearing this one: a place arriving
-        // mid-flush then lands in the fresh map instead of one being drained.
-        const dirty = canvas.dirty;
-        canvas.dirty = new Map();
+/** Broadcast and persist one canvas's pending pixels. Also what eviction calls. */
+function flushCanvas(canvas: Canvas): void {
+    if (canvas.dirty.size === 0) return;
 
-        const pixels: Pixel[] = []
-        for (const [boardIdx, colour] of dirty) {
-            pixels.push({ x: boardIdx % canvas.w, y: Math.floor(boardIdx / canvas.w), colour })
-        }
+    // Hand the persist its own map rather than clearing this one: a place arriving
+    // mid-flush then lands in the fresh map instead of one being drained.
+    const dirty = canvas.dirty;
+    canvas.dirty = new Map();
 
-        // Deliberately not awaited - the tick must not block on a network round trip. A
-        // failed write loses those pixels from storage but not from memory, and the next
-        // write to the same pixel repairs it.
-        persistDirty(canvas, dirty).catch(err => app.log.error(err, "persisting board failed"));
+    const pixels: Pixel[] = []
+    for (const [boardIdx, colour] of dirty) {
+        pixels.push({ x: boardIdx % canvas.w, y: Math.floor(boardIdx / canvas.w), colour })
+    }
 
-        // The DELTA count is a u16, so a tick that dirties more pixels than that has to
-        // go out as several frames - one oversized frame would wrap the count to 0 and
-        // the client would drop every pixel in it silently.
-        for (let i = 0; i < pixels.length; i += MAX_DELTA_PIXELS) {
-            broadcast(canvas, encodeDelta(pixels.slice(i, i + MAX_DELTA_PIXELS)));
-        }
+    // Deliberately not awaited - the tick must not block on a network round trip. A
+    // failed write loses those pixels from storage but not from memory, and the next
+    // write to the same pixel repairs it.
+    persistDirty(canvas, dirty).catch(err => app.log.error(err, "persisting board failed"));
+
+    // The DELTA count is a u16, so a tick that dirties more pixels than that has to
+    // go out as several frames - one oversized frame would wrap the count to 0 and
+    // the client would drop every pixel in it silently.
+    for (let i = 0; i < pixels.length; i += MAX_DELTA_PIXELS) {
+        broadcast(canvas, encodeDelta(pixels.slice(i, i + MAX_DELTA_PIXELS)));
     }
 }
 
+
+/** How often to look for canvases to drop from memory. */
+const SWEEP_MS = 60_000;
 
 /** should run once after everything is wired up */
 app.addHook("onReady", async () => {
     startTicker(flushAll);
     app.log.info(`ticking at ${TICK_HZ}Hz`);
+
+    setInterval(() => {
+        for (const canvas of sweep(flushCanvas)) app.log.info(`evicted ${canvas.id}`);
+    }, SWEEP_MS);
 })
 
 // build the snapshot of the board with header and compressed board data

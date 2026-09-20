@@ -70,6 +70,58 @@ export function allResident(): Iterable<Canvas> {
 }
 
 
+/** How long a canvas with nobody connected stays in memory. */
+const IDLE_MS = 10 * 60 * 1000;
+
+/** Ceiling on canvases held in memory at once. */
+const MAX_RESIDENT = 50;
+
+/** The landing page is pinned, and a board someone is painting on is never taken away. */
+function canBeEvicted(c: Canvas): boolean {
+    return c.id !== MAIN_ID && c.clients.size === 0;
+}
+
+/**
+ * Drop canvases from memory so it stays bounded. Their boards are already in Redis, so
+ * this costs the next visitor a load and nothing else.
+ *
+ * Two rules, because neither works alone: idle canvases go, and if that still leaves too
+ * many resident, the stalest go too. Time alone has no ceiling - a hundred boards each
+ * touched every nine minutes would all stay. A count alone keeps dead boards resident
+ * until something newer needs the room.
+ *
+ * Both rules reduce to one cut. Sorted by lastActive, the idle canvases are exactly the
+ * front of the list, so each rule is just a depth to slice to, and the deeper one wins.
+ *
+ * Takes the flush as a parameter because flushing broadcasts, which lives with the socket
+ * code - passing it in is what keeps this module from importing its own caller.
+ */
+export function sweep(flush: (c: Canvas) => void): Canvas[] {
+    const now = Date.now();
+
+    const droppable = [...resident.values()]
+        .filter(canBeEvicted)
+        .sort((c1, c2) => c1.lastActive - c2.lastActive);   // oldest timestamp to the front
+
+    const idle = droppable.filter(c => now - c.lastActive > IDLE_MS).length;
+    const overCap = resident.size - MAX_RESIDENT;
+
+    // slice handles both edges: a negative overCap loses to idle, and a count past the
+    // end of the list is clamped.
+    const toEvict = droppable.slice(0, Math.max(idle, overCap));
+
+    for (const canvas of toEvict) {
+        // A canvas can be holding up to a tick's worth of unflushed pixels. Dropping it
+        // without flushing loses them with no error anywhere: the painter watched the
+        // pixel appear locally and it simply never persisted.
+        flush(canvas);
+        resident.delete(canvas.id);
+    }
+
+    return toEvict;
+}
+
+
 /** Loads currently in progress, keyed by canvas id. See loadCanvas. */
 const loading = new Map<string, Promise<Canvas | null>>();
 
@@ -137,6 +189,9 @@ export function removeClient(sock: WebSocket) {
     // Client canvas and Canvas client reference each other, must remove together
     client.canvas.clients.delete(sock);
     clients.delete(sock);
+    // The canvas was in use right up to this moment, so its idle clock starts now. Without
+    // this a board painted on for hours reads as hours idle the instant the room empties.
+    client.canvas.lastActive = Date.now();
 }
 
 export function broadcast(canvas: Canvas, payload: Uint8Array) {
