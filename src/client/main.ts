@@ -16,7 +16,12 @@ const overlayElem = document.getElementById("overlay") as HTMLCanvasElement;
 // https : wss   http : ws
 const protocol = location.protocol === "https:" ? "wss:" : "ws:";
 // sends the upgrade request, causes the 101
-const canvasId = new URLSearchParams(location.search).get("c") ?? "main";
+// The id is in the path now (/c/<id>). ?c= is still read so an old link that somehow
+// skipped the redirect still lands on the right board rather than silently on main.
+const pathId = location.pathname.match(/^\/c\/([^/]+)/)?.[1];
+const canvasId = pathId
+    ? decodeURIComponent(pathId)
+    : new URLSearchParams(location.search).get("c") ?? "main";
 const sock = new WebSocket(`${protocol}//${location.host}/ws?c=${encodeURIComponent(canvasId)}`);
 
 // The download links are static HTML, so point them at the canvas we are actually on

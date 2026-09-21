@@ -3,10 +3,14 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta property="og:title" content="Pixel canvas">
-    <meta property="og:description" content="A shared canvas anyone can paint on.">
+    <!-- Placeholders, filled per canvas by pageFor() in index.ts. Crawlers do not run
+         JavaScript, so choosing the canvas client-side would give every shared link
+         main's preview. -->
+    <meta property="og:title" content="{{TITLE}}">
+    <meta property="og:description" content="{{DESCRIPTION}}">
+    <meta property="og:url" content="{{URL}}">
     <!-- alpha=0 on purpose: link previews must stay opaque, see the route in index.ts -->
-    <meta property="og:image" content="http://localhost:8000/board.png?alpha=0">
+    <meta property="og:image" content="{{IMAGE}}">
     <link rel="stylesheet"
           href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <style>
@@ -34,7 +38,7 @@
         background-size: 16px 16px;
       }
     </style>
-    <title>Pixel canvas</title>
+    <title>{{TITLE}}</title>
   </head>
   <body>
     <main class="container">

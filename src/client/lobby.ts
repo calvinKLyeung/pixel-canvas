@@ -20,7 +20,7 @@ async function refresh(): Promise<void> {
 
     listElem.replaceChildren(...canvases.map(canvas => {
         const link = document.createElement("a");
-        link.href = `/?c=${encodeURIComponent(canvas.id)}`;
+        link.href = `/c/${encodeURIComponent(canvas.id)}`;
         link.textContent = canvas.name;
 
         const detail = document.createElement("small");
@@ -69,7 +69,7 @@ formElem.addEventListener("submit", async (e) => {
     }
 
     const { id } = await reply.json() as { id: string };
-    location.href = `/?c=${encodeURIComponent(id)}`;
+    location.href = `/c/${encodeURIComponent(id)}`;
 });
 
 // Fill the size fields with the defaults and the bounds the validator enforces

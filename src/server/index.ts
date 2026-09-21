@@ -4,6 +4,7 @@ import WebSocket from "ws";  // for server websocket
 import websocket from "@fastify/websocket"
 import fastifyStatic from "@fastify/static";
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
 
 import { DEFAULT_W, DEFAULT_H, index} from "../shared/constants.js";
 import { PALETTE_SIZE } from "../shared/palette.js";
@@ -12,7 +13,7 @@ import {
     newCanvasId, MAIN_ID, sweep,
     type CanvasConfig
 } from "./canvas.js";
-import { saveCanvasConfig, listPublicCanvasConfigs } from "./db.js";
+import { saveCanvasConfig, getCanvasConfig, listPublicCanvasConfigs } from "./db.js";
 import { persistDirty } from "./redis.js";
 import { TICK_HZ, startTicker } from "./hub.js";
 import { deflateSync } from "node:zlib";
@@ -29,6 +30,9 @@ const app = Fastify({ logger: true });
 /** Always First */
 await app.register(fastifyStatic, {
     root: join(process.cwd(), "public"),
+    // index.html is a template now, not a page - it is served through pageFor() so the
+    // link preview describes the canvas being shared. Raw, it would show {{TITLE}}.
+    index: false,
 });
 await app.register(websocket);
 
@@ -108,6 +112,57 @@ app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest)
         removeClient(sock);
     })
 });
+
+/**
+ * The painting page, read once at boot. Its {{...}} holes are filled per canvas, because
+ * crawlers do not run JavaScript: picking the canvas client-side would give every shared
+ * link main's preview image and main's title.
+ */
+const pageTemplate = readFileSync(join(import.meta.dirname, "../../public/index.html"), "utf8");
+
+const HTML_ESCAPES: Record<string, string> = {
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+};
+
+/**
+ * Canvas names are typed by whoever made the canvas and the Host header is whatever the
+ * client sent, so neither reaches an HTML attribute unescaped. A canvas named
+ * `"><script>` would otherwise run for everyone who opened it.
+ */
+const escapeHtml = (s: string) => s.replace(/[&<>"']/g, c => HTML_ESCAPES[c] ?? c);
+
+const originOf = (req: FastifyRequest) =>
+    `${req.protocol}://${req.headers.host ?? `localhost:${PORT}`}`;
+
+function pageFor(cfg: CanvasConfig, origin: string): string {
+    const id = encodeURIComponent(cfg.id);
+    return pageTemplate
+        .replaceAll("{{TITLE}}", escapeHtml(`${cfg.name} - pixel canvas`))
+        .replaceAll("{{DESCRIPTION}}", escapeHtml(`A shared ${cfg.w}x${cfg.h} canvas anyone can paint on.`))
+        .replaceAll("{{URL}}", escapeHtml(`${origin}/c/${id}`))
+        .replaceAll("{{IMAGE}}", escapeHtml(`${origin}/board.png?alpha=0&c=${id}`));
+}
+
+/** The canonical URL for a canvas. */
+app.get("/c/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+
+    // Config only, deliberately not loadCanvas: a crawler fetching a link preview should
+    // not pull a board into memory and push a live one out of it.
+    const cfg = getCanvasConfig(id);
+    if (!cfg) return reply.code(404).type("text/plain").send("no such canvas");
+
+    return reply.type("text/html").send(pageFor(cfg, originOf(req)));
+});
+
+/** Older links were /?c=<id>, and bare / is the landing page. Both go to the real URL. */
+app.get("/", async (req, reply) => {
+    const id = (req.query as { c?: string }).c ?? MAIN_ID;
+    return reply.redirect(`/c/${encodeURIComponent(id)}`, 302);
+});
+
+/** Static would serve the raw template here, placeholders and all. */
+app.get("/index.html", async (_req, reply) => reply.redirect("/", 302));
 
 app.get("/board.png", async (req, reply) => {
     // relabel unknown data in query to known strings
