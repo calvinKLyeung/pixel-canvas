@@ -327,6 +327,10 @@ if (new URLSearchParams(location.search).has("metrics")) {
 }
 
 
+// The landing canvas is where newcomers arrive, so that is where the source link goes.
+if (canvasId === MAIN_ID) document.getElementById("github-row")!.hidden = false;
+
+
 /**========== owner: days left before the inactivity purge ==========*/
 
 // Only the owner is told: the countdown is about their login, and only they can reset it.
