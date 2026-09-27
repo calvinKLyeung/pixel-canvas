@@ -12,11 +12,12 @@ import { PALETTE_SIZE, EMPTY } from "../shared/palette.js";
 import {
     peekResident, loadCanvas, addClient, removeClient, type Canvas, allResident,
     newCanvasId, newJoinCode, MAIN_ID, sweep, canEnter, readCanvas, dropResident, clientOf,
-    applyFrame, sendPending, type CanvasConfig, type Client, withinFloodCap, FLOOD_BURST,
+    applyFrame, sendPending, type CanvasConfig, type Client, withinFloodCap, FLOOD_BURST, ownerPainted,
 } from "./canvas.js";
 import {
     saveCanvasConfig, getCanvasConfig, getCanvasByOwner, listCanvases, setCanvasSize,
     setCanvasPrivacy, deleteCanvasConfig, addMember, type User,
+    inactiveUserIds, deleteUser, deleteExpiredSessions, touchActive,
 } from "./db.js";
 import {
     persistDirty, clearBoard, deleteBoard, publishFrame, publishRoomEvent, onBusMessage,
@@ -30,7 +31,9 @@ import {
     MSG, viewOf, decodePlace, encodeDelta, MAX_DELTA_PIXELS, type Pixel, encodeClear,
 } from "../shared/protocols.js";
 import {type CreateRequest, validateCreate} from "../shared/canvasConfig.js";
-import { register, login, issueSession, userFromToken, endSession, SESSION_DAYS } from "./auth.js";
+import {
+    register, login, issueSession, userFromToken, endSession, SESSION_DAYS, INACTIVE_MS,
+} from "./auth.js";
 
 
 
@@ -103,7 +106,9 @@ app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest)
     // so adding it now would leave a dead socket in canvas.clients forever.
     if (sock.readyState !== WebSocket.OPEN) return;
 
-    const client: Client = { sock, canvas, userId: user?.id, floodTokens: FLOOD_BURST, floodAt: Date.now() };
+    const client: Client = {
+        sock, canvas, userId: user?.id, floodTokens: FLOOD_BURST, floodAt: Date.now(), renewedAt: 0,
+    };
 
     // add socket to clients
     addClient(client);
@@ -142,6 +147,7 @@ app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest)
         if (colour !== EMPTY && colour >= PALETTE_SIZE) return;
 
         metrics.pixelsIn += 1;
+        if (ownerPainted(client)) touchActive(client.userId!);
 
         const idx = index(x, y, canvas.w);
         canvas.board[idx] = colour;
@@ -418,16 +424,38 @@ app.post("/api/c/:cid/join", async (req, reply) => {
 app.delete("/api/c/:cid", async (req, reply) => {
     const own = requireOwnRoom(req, reply);
     if (!own) return;
-    const { id } = own.cfg;
 
+    await deleteRoom(own.cfg.id);
+    app.log.info(`canvas ${own.cfg.id} deleted by user ${own.user.id}`);
+    return { ok: true };
+});
+
+/** Remove a room everywhere: config, open sockets on every process, board and history. */
+async function deleteRoom(id: string): Promise<void> {
     // Config first, so nobody can join while the rest is torn down. Every process holding
     // it closes its own sockets when the event arrives (onRoomEvent).
     deleteCanvasConfig(id);
     await publishRoomEvent(id, "deleted");
     await deleteBoard(id);
-    app.log.info(`canvas ${id} deleted by user ${own.user.id}`);
-    return { ok: true };
-});
+}
+
+/**
+ * Delete every account with no activity for INACTIVE_DAYS (see auth.ts), room and history
+ * included, and clear out expired sessions. Safe to run on several processes at once:
+ * each step is harmless to repeat.
+ */
+async function purgeInactive(): Promise<void> {
+    for (const userId of inactiveUserIds(Date.now() - INACTIVE_MS)) {
+        // Room before account: nothing cascades from users to canvases (see deleteUser),
+        // and a crash in between leaves an account the next pass will find again.
+        const room = getCanvasByOwner(userId);
+        if (room) await deleteRoom(room.id);
+        deleteUser(userId);
+        app.log.info(`purged inactive user ${userId}${room ? ` and canvas ${room.id}` : ""}`);
+    }
+    const sessions = deleteExpiredSessions();
+    if (sessions) app.log.info(`deleted ${sessions} expired sessions`);
+}
 
 
 /** ========== metrics ========== */
@@ -492,7 +520,11 @@ app.post("/api/logout", async (req, reply) => {
 app.get("/api/me", async (req, reply) => {
     const user = userFromToken(req.cookies.session);
     if (!user) return reply.code(401).send({ error: "not logged in" });
-    return { id: user.id, name: user.name, isAdmin: user.isAdmin };
+    return {
+        id: user.id, name: user.name, isAdmin: user.isAdmin,
+        // When purgeInactive will delete this account and its room. null: admins never are.
+        deleteAt: user.isAdmin ? null : user.lastActiveAt + INACTIVE_MS,
+    };
 });
 
 
@@ -614,6 +646,9 @@ const SWEEP_MS = 60_000;
 /** Well inside the ~60 s idle timeout most proxies put on a WebSocket. */
 const KEEPALIVE_MS = 30_000;
 
+/** How often to look for inactive accounts. The limit is days, so an hour late is nothing. */
+const PURGE_MS = 60 * 60_000;
+
 /** should run once after everything is wired up */
 app.addHook("onReady", async () => {
     startTicker(flushAll);
@@ -637,6 +672,10 @@ app.addHook("onReady", async () => {
             }
         }
     }, KEEPALIVE_MS);
+
+    const purge = () => purgeInactive().catch(err => app.log.error(err, "purging inactive accounts failed"));
+    purge();    // at boot too: a server that restarts more often than hourly would never purge
+    setInterval(purge, PURGE_MS);
 })
 
 // build the snapshot of the board with header and compressed board data

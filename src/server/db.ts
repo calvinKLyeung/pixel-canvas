@@ -83,6 +83,24 @@ if (!hasJoinCode) {
     }
 }
 
+// Same story for users.last_active_at. Existing accounts start their clock now, not at
+// created_at - otherwise adding the column would delete everyone older than the limit on
+// the very next purge, with no warning ever shown. A database from before painting counted
+// as activity has the same clock under its old name, last_login_at: rename rather than add.
+const userColumns = (db.prepare(`PRAGMA table_info(users)`).all() as { name: string }[])
+    .map(col => col.name);
+if (!userColumns.includes("last_active_at")) {
+    try {
+        db.exec(userColumns.includes("last_login_at")
+            ? `ALTER TABLE users RENAME COLUMN last_login_at TO last_active_at`
+            : `ALTER TABLE users ADD COLUMN last_active_at INTEGER`);
+    } catch (err) {
+        // A second process booting at the same moment got there first.
+        if (!/duplicate column|no such column/.test(String(err))) throw err;
+    }
+    db.prepare(`UPDATE users SET last_active_at = ? WHERE last_active_at IS NULL`).run(Date.now());
+}
+
 /** A row as SQLite stores it: snake_case columns, 0/1 for the boolean. */
 interface CanvasRow {
     id: string;
@@ -217,6 +235,11 @@ export interface User {
     name: string;
     passwordHash: string;
     isAdmin: boolean;
+    /**
+     * Last time they logged in, registered, or painted in their own room. Anything else -
+     * opening a page, painting in someone else's room or on main - does not count.
+     */
+    lastActiveAt: number;
 }
 
 interface UserRow {
@@ -225,6 +248,7 @@ interface UserRow {
     password_hash: string;
     is_admin: number;
     created_at: number;
+    last_active_at: number;
 }
 
 const toUser = (row: UserRow): User => ({
@@ -232,16 +256,41 @@ const toUser = (row: UserRow): User => ({
     name: row.name,
     passwordHash: row.password_hash,
     isAdmin: row.is_admin === 1,
+    lastActiveAt: row.last_active_at,
 });
 
 const insertUser = db.prepare(
-    `INSERT INTO users (name, password_hash, created_at) VALUES (?, ?, ?)`);
+    `INSERT INTO users (name, password_hash, created_at, last_active_at) VALUES (?, ?, ?, ?)`);
 const selectUserByName = db.prepare(`SELECT * FROM users WHERE name = ?`);
 const selectUserById = db.prepare(`SELECT * FROM users WHERE id = ?`);
+const updateLastActive = db.prepare(`UPDATE users SET last_active_at = ? WHERE id = ?`);
+// Admins are never purged: losing the only account that can clear main would need a hand
+// edit of the database to undo.
+const selectInactiveUsers = db.prepare(
+    `SELECT id FROM users WHERE last_active_at < ? AND is_admin = 0`);
+const deleteUserRow = db.prepare(`DELETE FROM users WHERE id = ?`);
 
 /** Returns the new user's id. Throws if the name is taken, whatever its capitalisation. */
 export function createUser(name: string, passwordHash: string): number {
-    return Number(insertUser.run(name, passwordHash, Date.now()).lastInsertRowid);
+    const now = Date.now();
+    return Number(insertUser.run(name, passwordHash, now, now).lastInsertRowid);
+}
+
+export function touchActive(id: number, at = Date.now()): void {
+    updateLastActive.run(at, id);
+}
+
+/** Non-admin accounts whose last activity is older than `before`. */
+export function inactiveUserIds(before: number): number[] {
+    return (selectInactiveUsers.all(before) as { id: number }[]).map(r => r.id);
+}
+
+/**
+ * Remove an account. Sessions, memberships and drafts go with it (ON DELETE CASCADE).
+ * Their room does NOT: canvases.owner_id has no foreign key, so delete it first.
+ */
+export function deleteUser(id: number): void {
+    deleteUserRow.run(id);
 }
 
 export function getUserByName(name: string): User | null {
@@ -276,4 +325,11 @@ export function sessionUserId(tokenHash: string): number | null {
 
 export function deleteSession(tokenHash: string): void {
     deleteSessionRow.run(tokenHash);
+}
+
+const deleteExpiredRows = db.prepare(`DELETE FROM sessions WHERE expires_at <= ?`);
+
+/** Lookups already ignore expired sessions; this stops the table growing forever. */
+export function deleteExpiredSessions(now = Date.now()): number {
+    return deleteExpiredRows.run(now).changes;
 }

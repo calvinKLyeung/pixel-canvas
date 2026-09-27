@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { WebSocket } from "ws";
 import {
-    foldFrame, withinFloodCap, createCanvas, FLOOD_BURST, FLOOD_RATE, type Client,
+    foldFrame, withinFloodCap, createCanvas, FLOOD_BURST, FLOOD_RATE, ownerPainted, type Client,
 } from "../server/canvas.js";
 import { encodeDelta, encodeClear } from "../shared/protocols.js";
 import { EMPTY } from "../shared/palette.js";
@@ -44,6 +44,7 @@ describe("withinFloodCap", () => {
         canvas: createCanvas({ id: "t", name: "t", w: 4, h: 4, ownerId: null, isPublic: true, joinCode: null, createdAt: 0 }),
         floodTokens: FLOOD_BURST,
         floodAt: now,
+        renewedAt: 0,
     });
 
     it("allows a whole burst at once, then refuses", () => {
@@ -65,5 +66,28 @@ describe("withinFloodCap", () => {
         let later = 0;
         while (withinFloodCap(c, 3_600_000)) later++;
         expect(later).toBe(FLOOD_BURST);
+    });
+});
+
+describe("ownerPainted", () => {
+    const HOUR = 60 * 60_000;
+    const room = (ownerId: number | null) =>
+        createCanvas({ id: "r", name: "r", w: 4, h: 4, ownerId, isPublic: true, joinCode: null, createdAt: 0 });
+    const painter = (userId: number | undefined, ownerId: number | null): Client => ({
+        sock: {} as WebSocket, canvas: room(ownerId), userId,
+        floodTokens: FLOOD_BURST, floodAt: 0, renewedAt: 0,
+    });
+
+    it("renews for the owner painting in their own room, at most once an hour", () => {
+        const c = painter(7, 7);
+        expect(ownerPainted(c, 10 * HOUR)).toBe(true);
+        expect(ownerPainted(c, 10 * HOUR + 1000)).toBe(false);
+        expect(ownerPainted(c, 11 * HOUR)).toBe(true);
+    });
+
+    it("never renews for someone else's room, main, or a logged-out painter", () => {
+        expect(ownerPainted(painter(7, 8), HOUR)).toBe(false);
+        expect(ownerPainted(painter(7, null), HOUR)).toBe(false);   // main has no owner
+        expect(ownerPainted(painter(undefined, null), HOUR)).toBe(false);
     });
 });

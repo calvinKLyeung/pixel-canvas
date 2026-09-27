@@ -218,6 +218,23 @@ export interface Client {
     /** Messages this connection may still send right now. See withinFloodCap. */
     floodTokens: number;
     floodAt: number;
+    /** When this connection last renewed its owner's inactivity clock. See ownerPainted. */
+    renewedAt: number;
+}
+
+/** A connection renews at most this often: the limit is days, a write per pixel is waste. */
+const RENEW_EVERY_MS = 60 * 60_000;
+
+/**
+ * Whether an accepted paint should renew the painter's inactivity clock: only the owner,
+ * only in their own room (so never on main, which has no owner), at most hourly. Marks the
+ * connection as renewed when it says yes.
+ */
+export function ownerPainted(client: Client, now = Date.now()): boolean {
+    if (client.userId === undefined || client.userId !== client.canvas.ownerId) return false;
+    if (now - client.renewedAt < RENEW_EVERY_MS) return false;
+    client.renewedAt = now;
+    return true;
 }
 
 /**
