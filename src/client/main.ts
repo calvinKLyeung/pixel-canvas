@@ -172,7 +172,7 @@ PALETTE.forEach((_, i) => {
         `border:2px solid ${i === selectedColour ? "#000" : "transparent"};` +
         `padding:0;margin:2px;display:inline-block`;
 
-    button.addEventListener("click", (e) => {
+    button.addEventListener("click", () => {
         selectedColour = i;
         eraserElem.checked = false;     // picking a colour means you want to paint
         // redraw boarder to highlight selection
