@@ -1,10 +1,10 @@
-import { MIN_DIM, MAX_DIM, MIN_COOLDOWN, MAX_COOLDOWN, MIN_NAME_LENGTH, MAX_NAME_LENGTH} from "./constants.js";
+import { MIN_DIM, MAX_DIM, MIN_NAME_LENGTH, MAX_NAME_LENGTH} from "./constants.js";
 
 export interface CreateRequest {
     name: string;
     w: number;
     h: number;
-    cooldownMs: number;
+    isPublic: boolean;
 }
 
 /** Verify request payload of canvas config */
@@ -22,9 +22,8 @@ export function validateCreate(rawRequest:unknown): string | null {
             return `${label}: must be between ${MIN_DIM} - ${MAX_DIM}`;
         }
     }
-    // check cooldown within range
-    if (!Number.isInteger(createRequest.cooldownMs) || createRequest.cooldownMs! < MIN_COOLDOWN || createRequest.cooldownMs! > MAX_COOLDOWN) {
-        return `cooldown must be between ${MIN_COOLDOWN / 1000} - ${MAX_COOLDOWN / 1000} seconds`
+    if (typeof createRequest.isPublic !== "boolean") {
+        return "choose public or private";
     }
     return null;  // valid case
 }

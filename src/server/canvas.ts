@@ -1,7 +1,7 @@
 import type { WebSocket} from "ws";
 import { EMPTY } from "../shared/palette.js"
 import { randomBytes } from "node:crypto";
-import { getCanvasConfig } from "./db.js";
+import { getCanvasConfig, isMember } from "./db.js";
 import { loadBoard, writeBoard } from "./redis.js";
 
 /** The permanent landing canvas. Never created through the API, never evicted. */
@@ -13,9 +13,10 @@ export interface CanvasConfig {
     name: string;
     w: number;
     h: number;
-    cooldownMs: number;
     ownerId: number | null;  // null for main
     isPublic: boolean;
+    /** Needed to enter a private room. Kept when a room goes public, so it can go back. */
+    joinCode: string | null;
     createdAt: number;
 }
 
@@ -67,6 +68,11 @@ export function putResident(c: Canvas) {
 
 export function allResident(): Iterable<Canvas> {
     return resident.values();
+}
+
+/** Forget a canvas that no longer exists. Unlike eviction, there is nothing to flush to. */
+export function dropResident(id: string) {
+    resident.delete(id);
 }
 
 
@@ -165,12 +171,10 @@ export async function loadCanvas(id: string): Promise<Canvas | null> {
 }
 
 
-/** new client , serves as reference to socket, canvas, cooldown identity, userId*/
+/** new client , serves as reference to socket, canvas, userId*/
 export interface Client {
     sock: WebSocket;
     canvas: Canvas;
-    /** Whose cooldown bucket this connection spends: user id if logged in, else IP. */
-    identity: string | number;
     userId?: number;
 }
 
@@ -182,6 +186,10 @@ export function addClient(client: Client) {
     // Client canvas and Canvas client reference each other, must add together
     clients.set(client.sock, client);
     client.canvas.clients.add(client.sock);
+}
+
+export function clientOf(sock: WebSocket): Client | undefined {
+    return clients.get(sock);
 }
 
 export function removeClient(sock: WebSocket) {
@@ -210,14 +218,48 @@ export function broadcast(canvas: Canvas, payload: Uint8Array) {
 }
 
 
-/** Canvas id generator */
+/** Canvas id and room code generator */
 // no vowels, no 0/O/1/I/l
 const ALPHABET = "23456789bcdfghjkmnpqrstvwxz";
 
-export function newCanvasId(): string {
-    const bytes = randomBytes(8);  // 8 bytes
+function randomString(length: number): string {
+    const bytes = randomBytes(length);
     // map each byte to alpha
     return [...bytes].map( byte => ALPHABET[byte % ALPHABET.length]).join('');
+}
+
+export const newCanvasId = () => randomString(8);
+
+/** 6 characters: short enough to read out loud, ~387 million possibilities. */
+export const newJoinCode = () => randomString(6);
+
+
+/**
+ * Who may enter a room. main is open to everyone, logged in or not. Every other room
+ * needs an account; a private one also needs its owner or someone who has typed its code.
+ */
+export function canEnter(cfg: CanvasConfig, userId: number | undefined): boolean {
+    if (cfg.id === MAIN_ID) return true;
+    if (userId === undefined) return false;
+    if (cfg.isPublic || cfg.ownerId === userId) return true;
+    return isMember(userId, cfg.id);
+}
+
+/**
+ * A canvas's current board for rendering, WITHOUT making it resident. The lobby asks for
+ * a thumbnail of every room every few seconds; loading each one would keep every canvas
+ * in memory forever while a lobby tab is open, and eviction would never fire.
+ */
+export async function readCanvas(id: string): Promise<Canvas | null> {
+    const live = peekResident(id);
+    if (live) return live;
+
+    const cfg = getCanvasConfig(id);
+    if (!cfg) return null;
+    const canvas = createCanvas(cfg);
+    const bytes = await loadBoard(id);
+    if (bytes?.length === cfg.w * cfg.h) canvas.board.set(bytes);
+    return canvas;
 }
 
 

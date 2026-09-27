@@ -3,38 +3,79 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta property="og:title" content="Pixel canvas">
-    <meta property="og:description" content="A shared canvas anyone can paint on.">
+    <meta property="og:title" content="Pixel canvas rooms">
+    <meta property="og:description" content="Shared canvases to draw on together.">
     <link rel="stylesheet"
           href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-    <title>Canvases</title>
+    <style>
+      /* One tile per room, as many per row as fit - a table of game rooms. */
+      #rooms {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 1rem;
+      }
+      .tile { margin: 0; padding: .75rem; display: flex; flex-direction: column; gap: .4rem; }
+      .tile.mine { outline: 2px solid var(--pico-primary); }
+      /* Same blue-grey checkerboard as the canvas page, so unpainted reads the same here. */
+      .thumb {
+        display: block; aspect-ratio: 1; cursor: pointer; border: 1px solid var(--pico-muted-border-color);
+        background-color: #b6c3d0;
+        background-image: repeating-conic-gradient(#a3b3c4 0% 25%, #c2ceda 0% 50%);
+        background-size: 16px 16px;
+      }
+      .thumb img { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; display: block; }
+      .tile h3 { font-size: 1rem; margin: 0; display: flex; justify-content: space-between; gap: .5rem; }
+      .tile small { color: var(--pico-muted-color); }
+      .tile .controls { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+      .tile .controls button { padding: .25rem .6rem; font-size: .8rem; margin: 0; width: auto; }
+      .code { font-family: ui-monospace, Menlo, monospace; letter-spacing: .15em; font-weight: 600; }
+      .new-room { align-items: center; justify-content: center; text-align: center; min-height: 200px;
+                  border: 2px dashed var(--pico-muted-border-color); background: none; cursor: pointer; }
+    </style>
+    <title>Canvas rooms</title>
   </head>
   <body>
     <main class="container">
-      <h1>Canvases</h1>
-      <div id="auth"></div>
-      <ul id="list"></ul>
-
-      <h2>New canvas</h2>
-      <form id="create">
-        <label>Name
-          <input name="name" maxlength="40" required>
-        </label>
-        <div class="grid">
-          <label>Width
-            <input name="w" type="number" required>
-          </label>
-          <label>Height
-            <input name="h" type="number" required>
-          </label>
-          <label>Cooldown (seconds)
-            <input name="cooldown" type="number" value="1" required>
-          </label>
-        </div>
-        <p id="error" style="color:var(--pico-del-color)"></p>
-        <button type="submit">Create</button>
-      </form>
+      <nav>
+        <ul><li><h1 style="margin:0;font-size:1.6rem">Rooms</h1></li></ul>
+        <ul>
+          <li><a href="/c/main">Main canvas</a></li>
+          <li id="auth"></li>
+        </ul>
+      </nav>
+      <p id="error" style="color:var(--pico-del-color)"></p>
+      <div id="rooms"></div>
     </main>
+
+    <dialog id="create-dialog">
+      <article>
+        <header><h3 style="margin:0">Create your room</h3></header>
+        <form id="create">
+          <label>Name
+            <input name="name" maxlength="40" required>
+          </label>
+          <div class="grid">
+            <label>Width
+              <input name="w" type="number" required>
+            </label>
+            <label>Height
+              <input name="h" type="number" required>
+            </label>
+          </div>
+          <label>Who can draw
+            <select name="privacy">
+              <option value="public">Public - anyone logged in</option>
+              <option value="private">Private - needs a code</option>
+            </select>
+          </label>
+          <p id="create-error" style="color:var(--pico-del-color)"></p>
+          <div role="group">
+            <button type="submit">Create</button>
+            <button type="button" class="secondary" id="create-cancel">Cancel</button>
+          </div>
+        </form>
+      </article>
+    </dialog>
     <script type="module" src="/lobby.js"></script>
   </body>
 </html>

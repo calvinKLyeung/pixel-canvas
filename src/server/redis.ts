@@ -26,6 +26,11 @@ export async function writeBoard(c: Canvas): Promise<void> {
     await redis.set(boardKey(c.id), Buffer.from(c.board));
 }
 
+/** Remove a deleted canvas's board. */
+export async function deleteBoard(id: string): Promise<void> {
+    await redis.del(boardKey(id));
+}
+
 /**
  * Persist one tick's worth of pixels.
  *

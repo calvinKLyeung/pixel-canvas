@@ -3,8 +3,8 @@ export const DEFAULT_W = 256;
 export const DEFAULT_H = 256;
 export const MAX_DIM = 512;
 export const MIN_DIM = 16;
-export const MAX_COOLDOWN = 300_000;
-export const MIN_COOLDOWN = 1000;
+/** main is tiny on purpose: open to everyone, so small enough that nobody can swamp it. */
+export const MAIN_SIZE = 16;
 export const MAX_NAME_LENGTH = 40;
 export const MIN_NAME_LENGTH = 1;
 

@@ -7,29 +7,26 @@ import cookie from "@fastify/cookie";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 
-import { DEFAULT_W, DEFAULT_H, index} from "../shared/constants.js";
+import { MAIN_SIZE, index} from "../shared/constants.js";
 import { PALETTE_SIZE, EMPTY } from "../shared/palette.js";
 import {
     peekResident, loadCanvas, addClient, removeClient, broadcast, type Canvas, allResident,
-    newCanvasId, MAIN_ID, sweep,
+    newCanvasId, newJoinCode, MAIN_ID, sweep, canEnter, readCanvas, dropResident, clientOf,
     type CanvasConfig, type Client,
 } from "./canvas.js";
 import {
-    saveCanvasConfig, getCanvasConfig, listPublicCanvasConfigs, setCanvasCooldown,
-    saveDraft, loadDraft,
+    saveCanvasConfig, getCanvasConfig, getCanvasByOwner, listCanvases, setCanvasSize,
+    setCanvasPrivacy, deleteCanvasConfig, addMember, type User,
 } from "./db.js";
-import { persistDirty, writeBoard } from "./redis.js";
+import { persistDirty, writeBoard, deleteBoard } from "./redis.js";
 import { TICK_HZ, startTicker } from "./hub.js";
 import { deflateSync } from "node:zlib";
 import { renderPng } from "./export.js";
 import {
-    MSG, viewOf, decodePlace, encodeDelta, MAX_DELTA_PIXELS, type Pixel,
-    encodeRejected, encodeClear,
+    MSG, viewOf, decodePlace, encodeDelta, MAX_DELTA_PIXELS, type Pixel, encodeClear,
 } from "../shared/protocols.js";
 import {type CreateRequest, validateCreate} from "../shared/canvasConfig.js";
-import { Bucket, bucketFor, sweepBuckets } from "./limits.js";
 import { register, login, issueSession, userFromToken, endSession, SESSION_DAYS } from "./auth.js";
-import { MAX_DRAFT } from "../shared/draft.js";
 
 
 
@@ -47,17 +44,6 @@ await app.register(fastifyStatic, {
 await app.register(cookie);
 await app.register(websocket);
 
-// Drafts are PUT as raw bytes in the DELTA format. bodyLimit turns an oversized one into a
-// 413 before the handler runs - MAX_DRAFT is only enforced in the browser, which is not ours.
-app.addContentTypeParser(
-    "application/octet-stream",
-    { parseAs: "buffer", bodyLimit: 3 + 5 * MAX_DRAFT },
-    (_req, body, done) => done(null, body),
-);
-
-/** The landing canvas's cooldown. */
-const MAIN_COOLDOWN_MS = 5_000;
-
 /**
  * main is the only canvas not created through POST /api/canvas, so nothing else ever
  * writes its config row - without this the landing page 4004s after a restart.
@@ -66,21 +52,18 @@ async function ensureMain(): Promise<void> {
     saveCanvasConfig({
         id: MAIN_ID,
         name: MAIN_ID,
-        w: DEFAULT_W,
-        h: DEFAULT_H,
-        cooldownMs: MAIN_COOLDOWN_MS,
+        w: MAIN_SIZE,
+        h: MAIN_SIZE,
         ownerId: null,
         isPublic: true,
+        joinCode: null,
         createdAt: Date.now(),
     });
-    // The save above never overwrites, and main rows from before the cooldown existed hold
-    // 0 - which would make every paint on main free. The cooldown is safe to force;
-    // the dimensions are not (see below).
-    setCanvasCooldown(MAIN_ID, MAIN_COOLDOWN_MS);
+    // The save above never overwrites, so an older, bigger main keeps its old size without
+    // this. Forcing it means the stored board no longer fits, and loadCanvas below starts
+    // main over blank - which is the price of shrinking it.
+    setCanvasSize(MAIN_ID, MAIN_SIZE, MAIN_SIZE);
 
-    // The save is a no-op if main already exists, so let loadCanvas read the row back
-    // rather than trusting the defaults above: an existing main keeps its stored
-    // dimensions and the board people have already painted on it.
     const canvas = await loadCanvas(MAIN_ID);
     if (!canvas) throw new Error(`could not load ${MAIN_ID} after saving its config`);
 }
@@ -89,10 +72,23 @@ await ensureMain();
 app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest) => {
     const id = (req.query as { c?: string }).c ?? MAIN_ID;
 
-    const canvas = await loadCanvas(id);
-    if (!canvas) {
+    // Checked on the config, before loadCanvas, so a refused visitor never pulls a board
+    // into memory. The upgrade is an ordinary HTTP request, so the session cookie is here.
+    const cfg = getCanvasConfig(id);
+    if (!cfg) {
         sock.close(4004, "no such canvas");  // 4000-4999 is ours to define
         return;                              // reject before addClient, nothing to clean up
+    }
+    const user = userFromToken(req.cookies.session);
+    if (!canEnter(cfg, user?.id)) {
+        sock.close(user ? 4003 : 4001, user ? "private room" : "log in first");
+        return;
+    }
+
+    const canvas = await loadCanvas(id);
+    if (!canvas) {
+        sock.close(4004, "no such canvas");  // deleted while we were checking
+        return;
     }
 
     // The load above is this handler's first await, so the client may have given up during
@@ -100,11 +96,7 @@ app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest)
     // so adding it now would leave a dead socket in canvas.clients forever.
     if (sock.readyState !== WebSocket.OPEN) return;
 
-    // The upgrade is an ordinary HTTP request, so the session cookie arrives with it and
-    // there is nothing to add to the protocol. The bucket follows the person, not the
-    // socket: refreshing gets a new socket and the same cooldown.
-    const user = userFromToken(req.cookies.session);
-    const client: Client = { sock, canvas, identity: user?.id ?? req.ip, userId: user?.id };
+    const client: Client = { sock, canvas, userId: user?.id };
 
     // add socket to clients
     addClient(client);
@@ -126,18 +118,9 @@ app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest)
         const { x, y, colour } = decodePlace(view);
 
         // Types no longer exists at runtime, have to validate everything coming from the wire
-        // drop out of bound numbers. EMPTY is an erase, priced below like any other colour.
+        // drop out of bound numbers. EMPTY is allowed: that is the eraser.
         if (x >= canvas.w || y >= canvas.h) return;
         if (colour !== EMPTY && colour >= PALETTE_SIZE) return;
-
-        // Validated first, charged second: garbage must not cost a token, or anyone could
-        // drain someone else's bucket by sending it malformed messages.
-        // Looked up per paint rather than held on the client - see sweepBuckets.
-        const bucket = bucketFor(client.identity);
-        if (!bucket.take(canvas.cooldownMs)) {
-            sock.send(encodeRejected(bucket.msUntilNext(canvas.cooldownMs)));
-            return;
-        }
 
         const idx = index(x, y, canvas.w);
         canvas.board[idx] = colour;
@@ -183,10 +166,9 @@ function pageFor(cfg: CanvasConfig, origin: string): string {
         .replaceAll("{{DESCRIPTION}}", escapeHtml(`A shared ${cfg.w}x${cfg.h} canvas anyone can paint on.`))
         .replaceAll("{{URL}}", escapeHtml(`${origin}/c/${id}`))
         .replaceAll("{{IMAGE}}", escapeHtml(`${origin}/board.png?alpha=0&c=${id}`))
-        // For the page script: the draft time estimate and whether to offer clear-all.
-        // The server still checks both - these only decide what the page shows.
+        // For the page script, to decide whether to offer clear-all. The server still
+        // checks - this only decides what the page shows.
         .replaceAll("{{NAME}}", escapeHtml(cfg.name))
-        .replaceAll("{{COOLDOWN_MS}}", String(cfg.cooldownMs))
         .replaceAll("{{OWNER_ID}}", String(cfg.ownerId ?? ""));
 }
 
@@ -216,10 +198,17 @@ app.get("/board.png", async (req, reply) => {
     const qs = req.query as { c?: string; scale?: string; grid?: string; alpha?: string };
 
     // same ?c= as /ws - without this every canvas exports main's board.
-    // Loading an evicted canvas just to render it makes it resident again; the sweep
-    // drops it on the next pass, since a PNG request leaves no clients behind.
-    const canvas = await loadCanvas(qs.c ?? MAIN_ID);
+    // readCanvas, not loadCanvas: the lobby fetches a thumbnail of every room over and over,
+    // and loading each one would keep them all in memory for as long as a lobby is open.
+    const canvas = await readCanvas(qs.c ?? MAIN_ID);
     if (!canvas) return reply.code(404).send({ error: "no such canvas" });
+
+    // Every logged-in user may see every room's picture, private ones included - that is
+    // what the lobby tiles are. Logged out, only public rooms, which keeps link previews
+    // working for them.
+    if (!canvas.isPublic && !userFromToken(req.cookies.session)) {
+        return reply.code(401).send({ error: "log in first" });
+    }
 
     // clamp everything from query string
     // scale too big will allocate too many pixels to img and kill the process lol
@@ -239,44 +228,167 @@ app.get("/board.png", async (req, reply) => {
         .send(png);
 })
 
+/** ========== rooms ========== */
+
+/** The logged-in user, or null after sending a 401. */
+function requireUser(req: FastifyRequest, reply: FastifyReply): User | null {
+    const user = userFromToken(req.cookies.session);
+    if (!user) reply.code(401).send({ error: "log in first" });
+    return user;
+}
+
+/** The room in the URL if this user owns it, or null after sending the right error. */
+function requireOwnRoom(req: FastifyRequest, reply: FastifyReply): { user: User; cfg: CanvasConfig } | null {
+    const user = requireUser(req, reply);
+    if (!user) return null;
+    const cfg = getCanvasConfig((req.params as { cid: string }).cid);
+    if (!cfg) {
+        reply.code(404).send({ error: "no such canvas" });
+        return null;
+    }
+    if (cfg.ownerId !== user.id) {
+        reply.code(403).send({ error: "not your canvas" });
+        return null;
+    }
+    return { user, cfg };
+}
+
+/**
+ * Close the sockets of everyone no longer allowed in - after a room goes private or gets
+ * a new code. Changing the lock should lock out whoever is already inside, too.
+ */
+function kickDisallowed(cfg: CanvasConfig) {
+    const live = peekResident(cfg.id);
+    if (!live) return;
+    live.isPublic = cfg.isPublic;
+    live.joinCode = cfg.joinCode;
+    for (const sock of [...live.clients]) {
+        if (!canEnter(cfg, clientOf(sock)?.userId)) sock.close(4003, "private room");
+    }
+}
+
 app.post("/api/canvas", async (req, reply) => {
+    const user = requireUser(req, reply);
+    if (!user) return;
+
     const error = validateCreate(req.body);
     if (error) return reply.code(400).send({ error: error });
 
-    // Anonymous canvases are allowed and stay ownerless, which means nobody can clear them.
-    const user = userFromToken(req.cookies.session);
-    const { name, w, h, cooldownMs } = req.body as CreateRequest;
+    // Checked here for a friendly message; the unique index is the real guard (see catch).
+    if (getCanvasByOwner(user.id)) {
+        return reply.code(409).send({ error: "you already have a room - delete it to make a new one" });
+    }
 
+    const { name, w, h, isPublic } = req.body as CreateRequest;
     const cfg: CanvasConfig = {
         id: newCanvasId(),
         name,
         w,
         h,
-        cooldownMs,
-        ownerId: user?.id ?? null,
-        isPublic: true,
+        ownerId: user.id,
+        isPublic,
+        // Made even for a public room, so turning it private later has a code ready.
+        joinCode: newJoinCode(),
         createdAt: Date.now(),
     }
 
-    saveCanvasConfig(cfg);       // SQLite, so it survives a restart. Synchronous - no await.
+    try {
+        saveCanvasConfig(cfg);   // SQLite, so it survives a restart. Synchronous - no await.
+    } catch {
+        return reply.code(409).send({ error: "you already have a room - delete it to make a new one" });
+    }
     await loadCanvas(cfg.id);    // makes it resident and writes its blank board to Redis
 
     return { id: cfg.id };
 });
 
 
-app.get("/api/canvases", async () => {
-    // Lists what exists, not what is loaded - an evicted canvas is still a canvas, and
-    // before this the lobby quietly forgot every board nobody happened to be painting.
-    return listPublicCanvasConfigs(40).map(cfg => ({
-        id: cfg.id,
-        name: cfg.name,
-        w: cfg.w,
-        h: cfg.h,
-        // peek, not getResident: bumping lastActive here would mean an open lobby tab
-        // keeps every canvas on it resident and the sweep never evicts anything.
-        clients: peekResident(cfg.id)?.clients.size ?? 0,
-    }));
+/** The lobby: every room as a tile. Logged in only. */
+app.get("/api/canvases", async (req, reply) => {
+    const user = requireUser(req, reply);
+    if (!user) return;
+
+    // Lists what exists, not what is loaded - an evicted canvas is still a canvas.
+    return listCanvases(MAIN_ID, 60).map(cfg => {
+        const mine = cfg.ownerId === user.id;
+        return {
+            id: cfg.id,
+            name: cfg.name,
+            w: cfg.w,
+            h: cfg.h,
+            ownerName: cfg.ownerName,
+            isPublic: cfg.isPublic,
+            mine,
+            canEnter: canEnter(cfg, user.id),
+            // Only the owner ever sees the code - it is what they share.
+            code: mine ? cfg.joinCode : undefined,
+            // peek, not getResident: bumping lastActive here would mean an open lobby tab
+            // keeps every canvas on it resident and the sweep never evicts anything.
+            clients: peekResident(cfg.id)?.clients.size ?? 0,
+        };
+    });
+});
+
+/** Owner switches their room between public and private. */
+app.patch("/api/c/:cid", async (req, reply) => {
+    const own = requireOwnRoom(req, reply);
+    if (!own) return;
+
+    const { isPublic } = (req.body ?? {}) as { isPublic?: unknown };
+    if (typeof isPublic !== "boolean") return reply.code(400).send({ error: "isPublic must be true or false" });
+
+    // Rooms from before codes existed have none, so make one the first time it goes private.
+    const joinCode = own.cfg.joinCode ?? newJoinCode();
+    setCanvasPrivacy(own.cfg.id, isPublic, joinCode, false);
+    kickDisallowed({ ...own.cfg, isPublic, joinCode });
+    return { ok: true };
+});
+
+/** Owner makes a new code. Everyone who joined with the old one has to ask again. */
+app.post("/api/c/:cid/code", async (req, reply) => {
+    const own = requireOwnRoom(req, reply);
+    if (!own) return;
+
+    const joinCode = newJoinCode();
+    setCanvasPrivacy(own.cfg.id, own.cfg.isPublic, joinCode, true);
+    kickDisallowed({ ...own.cfg, joinCode });
+    return { code: joinCode };
+});
+
+/** Enter a private room's code. Right once, and you are a member from then on. */
+app.post("/api/c/:cid/join", async (req, reply) => {
+    const user = requireUser(req, reply);
+    if (!user) return;
+
+    const cfg = getCanvasConfig((req.params as { cid: string }).cid);
+    if (!cfg) return reply.code(404).send({ error: "no such canvas" });
+    if (canEnter(cfg, user.id)) return { ok: true };
+
+    const { code } = (req.body ?? {}) as { code?: unknown };
+    // Codes are made lowercase; people will type them however they read them.
+    if (typeof code !== "string" || code.trim().toLowerCase() !== cfg.joinCode) {
+        return reply.code(403).send({ error: "wrong code" });
+    }
+    addMember(user.id, cfg.id);
+    return { ok: true };
+});
+
+/** Owner deletes their room - the only way to make a different one. */
+app.delete("/api/c/:cid", async (req, reply) => {
+    const own = requireOwnRoom(req, reply);
+    if (!own) return;
+    const { id } = own.cfg;
+
+    // Config first, so nobody can join while the rest is torn down.
+    deleteCanvasConfig(id);
+    const live = peekResident(id);
+    if (live) {
+        for (const sock of [...live.clients]) sock.close(4004, "canvas deleted");
+        dropResident(id);
+    }
+    await deleteBoard(id);
+    app.log.info(`canvas ${id} deleted by user ${own.user.id}`);
+    return { ok: true };
 });
 
 
@@ -330,36 +442,6 @@ app.get("/api/me", async (req, reply) => {
 });
 
 
-/** ========== server-side drafts, so a draft follows you between devices ========== */
-
-app.put("/api/c/:cid/draft", async (req, reply) => {
-    const user = userFromToken(req.cookies.session);
-    if (!user) return reply.code(401).send();
-
-    // Checked first so a bad id is a 404. Left to the foreign key it is a raw SQLite
-    // error thrown into this handler, and the client sees a 500.
-    const { cid } = req.params as { cid: string };
-    if (!getCanvasConfig(cid)) return reply.code(404).send();
-
-    // Only octet-stream bodies are Buffers; a JSON body would be an object here.
-    if (!Buffer.isBuffer(req.body)) return reply.code(415).send();
-
-    saveDraft(user.id, cid, req.body);
-    return { ok: true };
-});
-
-app.get("/api/c/:cid/draft", async (req, reply) => {
-    const user = userFromToken(req.cookies.session);
-    if (!user) return reply.code(401).send();
-
-    const { cid } = req.params as { cid: string };
-    const data = loadDraft(user.id, cid);
-    // 204 is "never saved one here", which the page treats differently from an empty draft.
-    if (!data) return reply.code(204).send();
-    return reply.type("application/octet-stream").send(data);
-});
-
-
 /** ========== clearing a whole canvas ========== */
 
 /**
@@ -375,10 +457,6 @@ async function clearCanvas(canvas: Canvas): Promise<void> {
     await writeBoard(canvas);
     broadcast(canvas, encodeClear());
 }
-
-/** One clear per canvas per minute, so an owner cannot spam every viewer with them. */
-const CLEAR_COOLDOWN_MS = 60_000;
-const clearBuckets = new Map<string, Bucket>();
 
 app.post("/api/c/:cid/clear", async (req, reply) => {
     const user = userFromToken(req.cookies.session);
@@ -398,12 +476,6 @@ app.post("/api/c/:cid/clear", async (req, reply) => {
     const { confirmName } = (req.body ?? {}) as { confirmName?: unknown };
     if (confirmName !== canvas.name) {
         return reply.code(400).send({ error: "name does not match" });
-    }
-
-    let limit = clearBuckets.get(cid);
-    if (!limit) clearBuckets.set(cid, limit = new Bucket(1));
-    if (!limit.take(CLEAR_COOLDOWN_MS)) {
-        return reply.code(429).send({ error: "cleared too recently, try again in a minute" });
     }
 
     await clearCanvas(canvas);
@@ -470,7 +542,6 @@ app.addHook("onReady", async () => {
 
     setInterval(() => {
         for (const canvas of sweep(flushCanvas)) app.log.info(`evicted ${canvas.id}`);
-        sweepBuckets();
     }, SWEEP_MS);
 })
 

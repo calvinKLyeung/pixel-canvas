@@ -22,7 +22,7 @@ export const PALETTE_SIZE = PALETTE.length;
 
 /** Unpainted cell. Not a palette index - keeps "never touched" separate from index 0,
  * which stays paintable white. Clients may send it to erase: the place handler allows it
- * by name and charges the cooldown like any other colour, so erasing is never free. */
+ * by name. */
 export const EMPTY = 255;
 
 /** CSS colour for buttons*/

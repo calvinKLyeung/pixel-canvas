@@ -9,41 +9,48 @@ export const me: Promise<Me | null> = fetch("/api/me")
     .then(reply => (reply.ok ? reply.json() as Promise<Me> : null))
     .catch(() => null);
 
-/**
- * Log in / register / log out, drawn into `root`.
- *
- * Every change reloads the page. The WebSocket picked its cooldown identity when it
- * connected, so logging in without reconnecting would keep painting as your IP.
- */
-export async function mountAuth(root: HTMLElement) {
+/** "Signed in as NAME · Log out", or nothing when logged out. */
+export async function renderAccount(root: HTMLElement) {
     const user = await me;
+    if (!user) return;
+    root.innerHTML = `<small>Signed in as <b></b> · <a href="#">Log out</a></small>`;
+    root.querySelector("b")!.textContent = user.name;   // textContent: names are user input
+    root.querySelector("a")!.addEventListener("click", async (e) => {
+        e.preventDefault();
+        await fetch("/api/logout", { method: "POST" });
+        location.href = "/";        // everything but main needs an account
+    });
+}
 
-    if (user) {
-        root.innerHTML = `<small>Signed in as <b></b> · <a href="#">Log out</a></small>`;
-        root.querySelector("b")!.textContent = user.name;   // textContent: names are user input
-        root.querySelector("a")!.addEventListener("click", async (e) => {
-            e.preventDefault();
-            await fetch("/api/logout", { method: "POST" });
-            location.reload();
-        });
-        return;
-    }
-
-    root.innerHTML = `
-        <details>
-          <summary>Log in or register</summary>
+/**
+ * The log in / register popup. Logging in always lands in the lobby: the page that opened
+ * this picked its room and its connection while logged out, and reloading into the lobby
+ * is simpler than patching that up.
+ *
+ * `onCancel` runs if they close it without logging in.
+ */
+export function openLogin(onCancel: () => void = () => {}) {
+    const dialog = document.createElement("dialog");
+    dialog.innerHTML = `
+        <article>
+          <header><h3 style="margin:0">Log in to see all canvases</h3></header>
           <form>
             <input name="name" placeholder="Name" autocomplete="username" required>
-            <input name="password" type="password" placeholder="Password"
+            <input name="password" type="password" placeholder="Password (8+ characters)"
                    autocomplete="current-password" required>
-            <button name="login">Log in</button>
-            <button name="register" class="secondary">Register</button>
-            <small class="error"></small>
+            <small class="error" style="color:var(--pico-del-color)"></small>
+            <div role="group">
+              <button name="login">Log in</button>
+              <button name="register" class="secondary">Register</button>
+            </div>
           </form>
-        </details>`;
+          <footer><a href="#" class="cancel">Stay on the main canvas</a></footer>
+        </article>`;
+    document.body.append(dialog);
 
-    const form = root.querySelector("form")!;
-    const error = root.querySelector(".error")!;
+    const form = dialog.querySelector("form")!;
+    const error = dialog.querySelector(".error")!;
+    let loggedIn = false;
 
     form.addEventListener("submit", async (e) => {
         e.preventDefault();
@@ -57,9 +64,22 @@ export async function mountAuth(root: HTMLElement) {
             body: JSON.stringify({ name: data.get("name"), password: data.get("password") }),
         });
         if (reply.ok) {
-            location.reload();
+            loggedIn = true;
+            location.href = "/lobby.html";
             return;
         }
         error.textContent = (await reply.json().catch(() => ({}))).error ?? "something went wrong";
     });
+
+    dialog.querySelector(".cancel")!.addEventListener("click", (e) => {
+        e.preventDefault();
+        dialog.close();
+    });
+    // Esc closes a dialog too, so cancelling is handled on close rather than on the link.
+    dialog.addEventListener("close", () => {
+        dialog.remove();
+        if (!loggedIn) onCancel();
+    });
+
+    dialog.showModal();
 }

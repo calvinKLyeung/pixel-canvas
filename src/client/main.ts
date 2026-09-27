@@ -2,15 +2,11 @@ import { index} from "../shared/constants.js";
 import { line } from "../shared/line.js";
 import { cssColour, PALETTE, EMPTY } from "../shared/palette.js";
 import { initRenderer, render } from "./render.js";
-import { initOverlay, drawOverlay } from "./overlay.js";
+import { initOverlay } from "./overlay.js";
 
-import {encodePlace, decodeDelta, decodeRejected, MSG, viewOf} from "../shared/protocols.js";
+import {encodePlace, decodeDelta, MSG, viewOf} from "../shared/protocols.js";
 import { inflate } from "./decode.js";
-import { canPaint, startCooldown } from "./cooldown.js";
-import {
-    draft, bindCanvas, addDraft, removeDraft, clearDraft, save, sweepOldDrafts, toXY, MAX_DRAFT,
-} from "./draft.js";
-import { me, mountAuth } from "./auth.js";
+import { me, renderAccount, openLogin } from "./auth.js";
 
 
 
@@ -19,138 +15,150 @@ const noticeElem = document.getElementById("notice")!;
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const overlayElem = document.getElementById("overlay") as HTMLCanvasElement;
 
-// Filled into the page by pageFor() on the server. Only used for display - the server
-// enforces the real cooldown and the real ownership check.
+// Filled into the page by pageFor() on the server. Only decides what the page shows -
+// the server does the real ownership check.
 const page = document.body.dataset;
-const cooldownMs = Number(page.cooldownMs) || 0;
 const ownerId = Number(page.ownerId) || null;
 const canvasName = page.name ?? "";
 
+/** The one room anyone may use without an account. Same id as the server's MAIN_ID. */
+const MAIN_ID = "main";
+
 // https : wss   http : ws
 const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-// sends the upgrade request, causes the 101
 // The id is in the path now (/c/<id>). ?c= is still read so an old link that somehow
 // skipped the redirect still lands on the right board rather than silently on main.
 const pathId = location.pathname.match(/^\/c\/([^/]+)/)?.[1];
 const canvasId = pathId
     ? decodeURIComponent(pathId)
-    : new URLSearchParams(location.search).get("c") ?? "main";
-const sock = new WebSocket(`${protocol}//${location.host}/ws?c=${encodeURIComponent(canvasId)}`);
+    : new URLSearchParams(location.search).get("c") ?? MAIN_ID;
 
 // The download links are static HTML, so point them at the canvas we are actually on
 for (const id of ["download", "download-grid"]) {
     const link = document.getElementById(id) as HTMLAnchorElement;
     link.href += `&c=${encodeURIComponent(canvasId)}`;
 }
-// !!! ensure sock uses array buffer instead of default Blob that require async !!!
-sock.binaryType = "arraybuffer";
 
-mountAuth(document.getElementById("auth")!);
-sweepOldDrafts();
+const user = await me;
+renderAccount(document.getElementById("auth")!);
+
+// The lobby is for accounts only: logged out, the link opens the login popup instead.
+document.getElementById("lobbylink")!.addEventListener("click", (e) => {
+    if (user) return;               // a normal link to the lobby
+    e.preventDefault();
+    openLogin();
+});
 
 
 // board - size is unknown until the SNAPSHOT header arrives, so nothing to draw yet
 let board: Uint8Array | null = null;
 let boardW = 0, boardH = 0;
+let sock: WebSocket | null = null;
 
 function showNotice(text: string) {
     noticeElem.textContent = text;
 }
 
-/**========== callbacks reacting to lifecycle events ==========*/
+/** Messages for the close codes the server uses to turn people away. */
+const CLOSE_REASONS: Record<number, string> = {
+    4001: "Log in to enter this room.",
+    4003: "This room is private. Open it from the lobby and enter its code.",
+    4004: "This room doesn't exist, or its owner deleted it.",
+};
 
-sock.addEventListener("open", (msg) => {
-    // the canvas stays blank until the snapshot lands - say so, it isn't broken
-    statusElem.textContent = "connected - loading canvas";
-});
+// Everything but main needs an account. Ask for one before connecting at all - the
+// server would only refuse the connection anyway.
+if (canvasId !== MAIN_ID && !user) {
+    statusElem.textContent = CLOSE_REASONS[4001]!;
+    openLogin(() => { location.href = "/"; });
+} else {
+    connect();
+}
 
+/**========== the connection ==========*/
 
-sock.addEventListener("message", async (e) => {
-    const data = e.data as ArrayBuffer;
-    // Binary -> use the new protocol
-    const view = viewOf(e.data as ArrayBuffer);
+function connect() {
+    // sends the upgrade request, causes the 101
+    const ws = new WebSocket(`${protocol}//${location.host}/ws?c=${encodeURIComponent(canvasId)}`);
+    sock = ws;
+    // !!! ensure sock uses array buffer instead of default Blob that require async !!!
+    ws.binaryType = "arraybuffer";
 
-    // get type tag of MSG
-    switch (view.getUint8(0)) {
-        // server -> client, initial join
-        case MSG.SNAPSHOT: {
-            const w = view.getUint16(1, true);  // true = little endian
-            const h = view.getUint16(3, true);  // true = little endian
-            const body = data.slice(5); // index 5 onward, copy data
-            const pixels = await inflate(body); // unpack Promise
+    ws.addEventListener("open", () => {
+        // the canvas stays blank until the snapshot lands - say so, it isn't broken
+        statusElem.textContent = "connected - loading canvas";
+    });
 
-            // is Snapshot but length mismatch
-            if (pixels.length !== w * h) {
-                // something went wrong
-                console.error(`bad snapshot: got ${pixels.length}, when expecting ${w * h}`);
-                return;
-            }
-            // valid case - (re)size everything to whatever board the server sent
-            if (!board || boardW !== w || boardH !== h) {
-                boardW = w;
-                boardH = h;
-                // EMPTY, not 0 - 0 is paintable white. The snapshot overwrites this
-                // immediately, but the board must never be briefly all-white.
-                board = new Uint8Array(w * h).fill(EMPTY);
-                initRenderer(canvas, w, h);
-                initOverlay(overlayElem, w, h);
-                // The draft is stored as board indices, so it needs the width first.
-                bindCanvas(canvasId, w, refreshDraft);
-                refreshDraft();
-            }
-            board.set(pixels);
-            render(board);
-            statusElem.textContent = "connected";
-            break;
-        }
-        // server -> client, Place pixels
-        case MSG.DELTA: {
-            if (!board) return;     // deltas before the snapshot have nowhere to land
-            let landed = false;
-            for (const pixel of decodeDelta(view)) {
-                const idx = index(pixel.x, pixel.y, boardW);
-                board[idx] = pixel.colour;
-                // A draft pixel only leaves the draft once the server confirms it here -
-                // see tryCommit.
-                if (draft.get(idx) === pixel.colour) {
-                    draft.delete(idx);
-                    landed = true;
+    ws.addEventListener("message", async (e) => {
+        const data = e.data as ArrayBuffer;
+        // Binary -> use the new protocol
+        const view = viewOf(data);
+
+        // get type tag of MSG
+        switch (view.getUint8(0)) {
+            // server -> client, initial join
+            case MSG.SNAPSHOT: {
+                const w = view.getUint16(1, true);  // true = little endian
+                const h = view.getUint16(3, true);  // true = little endian
+                const body = data.slice(5); // index 5 onward, copy data
+                const pixels = await inflate(body); // unpack Promise
+
+                // is Snapshot but length mismatch
+                if (pixels.length !== w * h) {
+                    // something went wrong
+                    console.error(`bad snapshot: got ${pixels.length}, when expecting ${w * h}`);
+                    return;
                 }
+                // valid case - (re)size everything to whatever board the server sent
+                if (!board || boardW !== w || boardH !== h) {
+                    boardW = w;
+                    boardH = h;
+                    // EMPTY, not 0 - 0 is paintable white. The snapshot overwrites this
+                    // immediately, but the board must never be briefly all-white.
+                    board = new Uint8Array(w * h).fill(EMPTY);
+                    initRenderer(canvas, w, h);
+                    initOverlay(overlayElem, w, h);
+                }
+                board.set(pixels);
+                render(board);
+                statusElem.textContent = "connected";
+                break;
             }
-            render(board);  // only do once per message, not pixel, render after pixels are settled
-            if (landed) afterDraftChange();
-            break;
+            // server -> client, Place pixels
+            case MSG.DELTA: {
+                if (!board) return;     // deltas before the snapshot have nowhere to land
+                for (const pixel of decodeDelta(view)) {
+                    board[index(pixel.x, pixel.y, boardW)] = pixel.colour;
+                }
+                render(board);  // only do once per message, not pixel, render after pixels are settled
+                break;
+            }
+            // server -> client, the owner wiped the canvas
+            case MSG.CLEAR: {
+                if (!board) return;
+                board.fill(EMPTY);
+                render(board);
+                break;
+            }
+            // some unknown data
+            default:
+                console.warn("unknown message type", view.getUint8(0));
         }
-        // server -> client, we painted faster than the cooldown allows
-        case MSG.REJECTED: {
-            startCooldown(decodeRejected(view));
-            break;
-        }
-        // server -> client, the owner wiped the canvas
-        case MSG.CLEAR: {
-            if (!board) return;
-            board.fill(EMPTY);
-            render(board);
-            break;
-        }
-        // some unknown data
-        default:
-            console.warn("unknown message type", view.getUint8(0));
-    }
-});
+    });
+
+    ws.addEventListener("close", (e) => {
+        statusElem.textContent = CLOSE_REASONS[e.code] ?? "disconnected";
+        if (e.code === 4001) openLogin(() => { location.href = "/"; });
+    });
+
+    ws.addEventListener("error", (e) => {
+        console.error("Websocket error", e);
+        statusElem.textContent = "error = check the console";
+    })
+}
 
 
-sock.addEventListener("close", (e) => {
-    statusElem.textContent = "disconnected";
-});
-
-sock.addEventListener("error", (e) => {
-    console.error("Websocket error", e);
-    statusElem.textContent = "error = check the console";
-})
-
-
-/**========== tools: colour, eraser, brush, draft mode ==========*/
+/**========== tools: colour, eraser, brush ==========*/
 
 let selectedColour = 5;
 const paletteElem = document.getElementById("palette")!;
@@ -176,75 +184,43 @@ PALETTE.forEach((_, i) => {
     paletteElem.appendChild(button);
 });
 
-/** The eraser is just a colour: EMPTY, charged a cooldown like any other paint. */
+/** The eraser is just a colour: EMPTY, which the server accepts by name. */
 const currentColour = () => (eraserElem.checked ? EMPTY : selectedColour);
 
 /**
- * Brush sizes live only in the browser. A stamp becomes N² separate draft pixels, and
- * each one is sent, checked and charged on its own. There is no "big brush" message,
- * so a modified client has nothing to abuse.
+ * Brush sizes live only in the browser: a stamp is sent as N² ordinary pixels. There is
+ * no "big brush" message, so the server has nothing new to validate.
  */
 const BRUSH_SIZES = [1, 3, 5, 9] as const;
 const brushElem = document.getElementById("brush") as HTMLSelectElement;
 for (const n of BRUSH_SIZES) {
-    // The cost is on the label: a 5x5 stamp is 25 cooldowns, and 8 of them fill a draft.
-    brushElem.add(new Option(`${n}×${n} · ${n * n}px`, String(n)));
+    brushElem.add(new Option(`${n}×${n}`, String(n)));
 }
-
-/**
- * Live mode sends each click straight to the server, one pixel. Draft mode queues
- * pixels locally - including by dragging, with brushes - and tryCommit drains them.
- * Drag is draft-only: with a cooldown, a one-second live drag is ~100 placements and
- * nearly all of them come back REJECTED.
- */
-let drafting = false;
-const draftModeElem = document.getElementById("draftmode") as HTMLInputElement;
-draftModeElem.addEventListener("change", () => {
-    drafting = draftModeElem.checked;
-    brushElem.disabled = !drafting;    // live mode is one pixel per click
-});
-brushElem.disabled = true;
 
 
 /**========== painting ==========*/
 
-/** Live mode: one pixel straight to the server. */
-function sendPlace(x: number, y: number) {
-    // make sure socket still in OPEN state
-    if (sock.readyState !== WebSocket.OPEN) return;
-    sock.send(encodePlace({ x, y, colour: currentColour() }));
-}
-
-/** Draft mode: queue a brush-sized square centred on (cx, cy). */
+/** Send a brush-sized square centred on (cx, cy). */
 function stamp(cx: number, cy: number) {
-    const size = Number(brushElem.value);
-    const r = Math.floor(size / 2);
+    if (!board || sock?.readyState !== WebSocket.OPEN) return;
+    const colour = currentColour();
+    const r = Math.floor(Number(brushElem.value) / 2);
     for (let dy = -r; dy <= r; dy++) {
         for (let dx = -r; dx <= r; dx++) {
             const x = cx + dx, y = cy + dy;
             if (x < 0 || x >= boardW || y < 0 || y >= boardH) continue;
-            if (!addDraft(x, y, currentColour())) {
-                showNotice(`Draft is full (${MAX_DRAFT} pixels).`);
-                return;
-            }
+            // Already that colour: a big brush dragged along overlaps itself constantly,
+            // and resending those would multiply the traffic for no change.
+            if (board[index(x, y, boardW)] === colour) continue;
+            sock.send(encodePlace({ x, y, colour }));
         }
     }
-}
-
-function refreshDraft() {
-    drawOverlay();
-    updateDraftCount();
-}
-
-function afterDraftChange() {
-    save();
-    refreshDraft();
 }
 
 let drawing = false;
 let lastX = -1, lastY = -1;
 
-function toBoard(e: MouseEvent): [number, number] | null {
+function toBoard(e: PointerEvent): [number, number] | null {
     if (!board) return null;    // no snapshot yet, nothing to paint on
     const rectangle = canvas.getBoundingClientRect();
     const x = Math.floor((e.clientX - rectangle.left) / rectangle.width * boardW);
@@ -253,24 +229,18 @@ function toBoard(e: MouseEvent): [number, number] | null {
 }
 
 canvas.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0) return;  // right button is "remove from draft", see contextmenu
+    if (e.button !== 0) return;  // left button / touch / pen only
     const pos = toBoard(e);
     if (!pos) return;
     e.preventDefault(); // cancel browser built-in reaction to the event
     canvas.setPointerCapture(e.pointerId); // keep the events if we leave the canvas
     drawing = true;
     [lastX, lastY] = pos;
-    if (drafting) {
-        stamp(pos[0], pos[1]);
-        afterDraftChange();
-    } else {
-        sendPlace(pos[0], pos[1]);
-    }
+    stamp(pos[0], pos[1]);
 })
 
 canvas.addEventListener("pointermove", (e) => {
     if (!drawing) return;
-    if (!drafting) return;      // live mode is click-only
     const pos = toBoard(e);
     if (!pos) return;
     const [x, y] = pos;
@@ -281,7 +251,6 @@ canvas.addEventListener("pointermove", (e) => {
         if (px === lastX && py === lastY) return; // same as starting point = nothing to paint
         stamp(px, py);
     });
-    afterDraftChange();
     [lastX, lastY] = [x, y];
 })
 
@@ -294,75 +263,13 @@ function endStroke(e: PointerEvent) {
 canvas.addEventListener("pointerup", endStroke);
 canvas.addEventListener("pointercancel", endStroke)
 
-/**
- * Right-click cancels a pending pixel, for free. Not the same as the eraser, which queues
- * an erase that costs a cooldown - mix the two up and fixing a mistake costs a token.
- */
-canvas.addEventListener("contextmenu", (e) => {
-    if (!drafting) return;
-    e.preventDefault();                     // no browser menu over the board
-    const pos = toBoard(e);
-    if (!pos) return;
-    removeDraft(pos[0], pos[1]);
-    afterDraftChange();
-});
-
-
-/**========== draining the draft ==========*/
-
-/**
- * Send the next draft pixel whenever the cooldown allows.
- *
- * The pixel is NOT removed when sent - only when a DELTA confirms it landed. If it is
- * rejected, or the connection blips, it is still queued and simply goes again on a later
- * tick. Deleting it here would make a refused pixel silently vanish from the drawing.
- */
-function tryCommit() {
-    if (!board || !canPaint() || sock.readyState !== WebSocket.OPEN) return;
-
-    let skipped = false;
-    for (const [idx, colour] of draft) {
-        // Already that colour - sending it would spend a cooldown changing nothing.
-        // Common with the eraser dragged over blank board.
-        if (board[idx] === colour) {
-            draft.delete(idx);
-            skipped = true;
-            continue;
-        }
-        const [x, y] = toXY(idx);
-        sock.send(encodePlace({ x, y, colour }));
-        break;
-    }
-    if (skipped) afterDraftChange();
-}
-
-setInterval(tryCommit, 250);
-
-/** "38 queued" means nothing; "~3 min" says whether to wait or clear it. */
-function updateDraftCount() {
-    const n = draft.size;
-    const seconds = Math.ceil((n * cooldownMs) / 1000);
-    const eta = seconds < 60 ? `${seconds}s` : `${Math.ceil(seconds / 60)} min`;
-    document.getElementById("draftcount")!.textContent = n === 0 ? "" : `${n} queued · ~${eta}`;
-}
-
-document.getElementById("cleardraft")!.addEventListener("click", () => {
-    if (draft.size === 0) return;
-    // Losing a 200-pixel sketch to a stray click is miserable.
-    if (!confirm(`Discard ${draft.size} pending pixels?`)) return;
-    clearDraft();
-    refreshDraft();
-});
-
 
 /**========== owner: clear the whole canvas ==========*/
 
 const clearAllElem = document.getElementById("clearall") as HTMLButtonElement;
 
 // Shown only to whoever may use it. The server checks again - hiding a button is not security.
-me.then(user => {
-    if (user && (user.id === ownerId || user.isAdmin)) clearAllElem.hidden = false;
-});
+if (user && (user.id === ownerId || user.isAdmin)) clearAllElem.hidden = false;
 
 clearAllElem.addEventListener("click", async () => {
     const typed = prompt(

@@ -9,22 +9,18 @@
  *      u16  height
  *      ... zlib deflated board of bytes, one per pixel
  *
- *   REJECTED (server -> client) a placement was refused by the cooldown
- *      u8   type = 4
- *      u16  waitMs   milliseconds until the next paint, capped at 65535
- *
  *   CLEAR (server -> client) the whole board is now EMPTY
  *      u8   type = 5
  */
 // type def
-// 6 is claimed but nothing sends it yet. Milestone 08's event log
+// 4 and 6 are claimed but nothing sends them. Milestone 08's event log
 // stamps every entry with one of these ids and is append-only, so settling the
 // numbering before the log exists is free - renumbering afterwards is not.
 type MsgShape = {
     readonly PLACE:    1;
     readonly DELTA:    2;
     readonly SNAPSHOT: 3;
-    readonly REJECTED: 4;  // 05,  cooldown refusal
+    readonly REJECTED: 4;  // unused since the cooldown was removed; kept so ids never shift
     readonly CLEAR:    5;  // 05c, owner canvas reset
     readonly PRESENCE: 6;  // optional, connected-user count
 };
@@ -124,23 +120,6 @@ export function decodeDelta(view: DataView): Pixel[] {
         off += 5; // next pixel
     }
     return out;
-}
-
-/** ========== REJECTED: server -> client, 3 bytes ========== */
-export const MAX_WAIT_MS = 65535;
-
-export function encodeRejected(waitMs: number): Uint8Array {
-    const buff = new Uint8Array(3);
-    const view = new DataView(buff.buffer);
-    view.setUint8(0, MSG.REJECTED);
-    // setUint16 does not throw on 70000 - it wraps to 4464, and the client would show a
-    // 4 second wait for a 70 second cooldown. Clamp before writing any fixed-width int.
-    view.setUint16(1, Math.min(waitMs, MAX_WAIT_MS), true);
-    return buff;
-}
-
-export function decodeRejected(view: DataView): number {
-    return view.getUint16(1, true);
 }
 
 /**
