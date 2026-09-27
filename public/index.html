@@ -37,15 +37,29 @@
         background-image: repeating-conic-gradient(#a3b3c4 0% 25%, #c2ceda 0% 50%);
         background-size: 16px 16px;
       }
+
+      /* Title left, main button dead centre, sign-in status right. A grid rather than
+         flex space-between, so the button stays centred whatever the sides' widths. */
+      .topbar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+                gap: 1rem; margin-bottom: 1.5rem; }
+      .topbar h1 { margin: 0; font-size: 1.6rem; }
+      .topbar [role="button"] { font-size: 1.1rem; padding: .7rem 1.8rem; margin: 0; }
+      .topbar > :last-child { justify-self: end; }
+      @media (max-width: 600px) {
+        .topbar { grid-template-columns: 1fr; justify-items: center; }
+        .topbar > :last-child { justify-self: center; }
+      }
     </style>
     <title>{{TITLE}}</title>
   </head>
   <!-- Read by main.ts for display only; the server does the real ownership check -->
   <body data-name="{{NAME}}" data-owner-id="{{OWNER_ID}}">
     <main class="container">
-      <h1>Pixel Canvas</h1>
-      <div id="auth"></div>
-      <p><a id="lobbylink" href="/lobby.html">All canvases</a></p>
+      <header class="topbar">
+        <h1>Pixel Canvas</h1>
+        <a id="lobbylink" href="/lobby.html" role="button" class="outline">All canvases</a>
+        <div id="auth"></div>
+      </header>
       <p id="status">Connecting...</p>
       <!-- dev readout, shown when the URL has ?metrics -->
       <p><small id="metrics" hidden style="font-family:ui-monospace,Menlo,monospace"></small></p>

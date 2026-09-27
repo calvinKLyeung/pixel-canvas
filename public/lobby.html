@@ -31,18 +31,27 @@
       .code { font-family: ui-monospace, Menlo, monospace; letter-spacing: .15em; font-weight: 600; }
       .new-room { align-items: center; justify-content: center; text-align: center; min-height: 200px;
                   border: 2px dashed var(--pico-muted-border-color); background: none; cursor: pointer; }
+
+      /* Same header as the canvas page: title left, main button centre, sign-in right. */
+      .topbar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+                gap: 1rem; margin-bottom: 1.5rem; }
+      .topbar h1 { margin: 0; font-size: 1.6rem; }
+      .topbar [role="button"] { font-size: 1.1rem; padding: .7rem 1.8rem; margin: 0; }
+      .topbar > :last-child { justify-self: end; }
+      @media (max-width: 600px) {
+        .topbar { grid-template-columns: 1fr; justify-items: center; }
+        .topbar > :last-child { justify-self: center; }
+      }
     </style>
     <title>Canvas rooms</title>
   </head>
   <body>
     <main class="container">
-      <nav>
-        <ul><li><h1 style="margin:0;font-size:1.6rem">Rooms</h1></li></ul>
-        <ul>
-          <li><a href="/c/main">Main canvas</a></li>
-          <li id="auth"></li>
-        </ul>
-      </nav>
+      <header class="topbar">
+        <h1>Rooms</h1>
+        <a href="/c/main" role="button" class="outline">Main canvas</a>
+        <div id="auth"></div>
+      </header>
       <p id="error" style="color:var(--pico-del-color)"></p>
       <div id="rooms"></div>
     </main>
