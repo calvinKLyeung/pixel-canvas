@@ -72,7 +72,16 @@ db.exec(`
 // that already exists - so add it by hand, once.
 const hasJoinCode = (db.prepare(`PRAGMA table_info(canvases)`).all() as { name: string }[])
     .some(col => col.name === "join_code");
-if (!hasJoinCode) db.exec(`ALTER TABLE canvases ADD COLUMN join_code TEXT`);
+if (!hasJoinCode) {
+    try {
+        db.exec(`ALTER TABLE canvases ADD COLUMN join_code TEXT`);
+    } catch (err) {
+        // Two processes booting together can both see the column missing; the second
+        // ALTER then fails because the first already added it. That is the only failure
+        // worth ignoring here.
+        if (!String(err).includes("duplicate column")) throw err;
+    }
+}
 
 /** A row as SQLite stores it: snake_case columns, 0/1 for the boolean. */
 interface CanvasRow {

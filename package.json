@@ -5,6 +5,8 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx watch src/server/index.ts",
+    "dev:8001": "PORT=8001 tsx watch src/server/index.ts",
+    "proxy": "caddy run --config Caddyfile --adapter caddyfile",
     "build:client": "esbuild src/client/main.ts src/client/lobby.ts --bundle --format=esm --outdir=public",
     "watch:client": "npm run build:client -- --watch",
     "loadtest": "tsx src/loadtest.ts",

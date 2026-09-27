@@ -264,6 +264,22 @@ canvas.addEventListener("pointerup", endStroke);
 canvas.addEventListener("pointercancel", endStroke)
 
 
+/**========== dev readout: add ?metrics to the URL ==========*/
+
+if (new URLSearchParams(location.search).has("metrics")) {
+    const metricsElem = document.getElementById("metrics")!;
+    metricsElem.hidden = false;
+    setInterval(async () => {
+        const m = await (await fetch("/metrics")).json();
+        // Behind the proxy each request can land on either process, hence the port.
+        metricsElem.textContent =
+            `:${m.port} · ${m.connections} conns · busy ${(m.busy * 100).toFixed(0)}% · ` +
+            `loop p99 ${m.loopDelayP99Ms.toFixed(1)}ms · tick p99 ${m.tickMsP99.toFixed(2)}ms · ` +
+            `fanout p99 ${m.fanoutMsP99.toFixed(2)}ms · ${(m.bytesOut / 1024).toFixed(1)} KB/s out`;
+    }, 1000);
+}
+
+
 /**========== owner: clear the whole canvas ==========*/
 
 const clearAllElem = document.getElementById("clearall") as HTMLButtonElement;

@@ -2,7 +2,12 @@ import type { WebSocket} from "ws";
 import { EMPTY } from "../shared/palette.js"
 import { randomBytes } from "node:crypto";
 import { getCanvasConfig, isMember } from "./db.js";
-import { loadBoard, writeBoard } from "./redis.js";
+import { loadBoard, writeBoard, subscribeCanvas } from "./redis.js";
+import {
+    MSG, viewOf, decodeDelta, encodeDelta, encodeClear, MAX_DELTA_PIXELS, type Pixel,
+} from "../shared/protocols.js";
+import { index } from "../shared/constants.js";
+import { metrics } from "./metrics.js";
 
 /** The permanent landing canvas. Never created through the API, never evicted. */
 export const MAIN_ID = "main";
@@ -24,6 +29,16 @@ export interface CanvasConfig {
 export interface Canvas extends CanvasConfig {
     board: Uint8Array;
     dirty: Map<number, number>;
+    /**
+     * Pixels heard from the bus (from every process, this one included) and not yet sent
+     * to our clients. Sent once per tick as ONE frame. Sending each process's frame as it
+     * arrives would give every client one frame per process per tick - so with two
+     * processes each would do exactly as many socket writes as one process did alone,
+     * and adding processes would buy nothing.
+     */
+    outgoing: Map<number, number>;
+    /** A CLEAR arrived since the last send; it goes out before `outgoing`. */
+    clearPending: boolean;
     clients: Set<WebSocket>;
     lastActive: number;  // prepare for eviction
 }
@@ -33,6 +48,8 @@ export function createCanvas(cfg: CanvasConfig): Canvas {
         ...cfg,
         board: new Uint8Array(cfg.w * cfg.h).fill(EMPTY),
         dirty: new Map(),
+        outgoing: new Map(),
+        clearPending: false,
         clients: new Set(),
         lastActive: Date.now(),
     };
@@ -131,6 +148,9 @@ export function sweep(flush: (c: Canvas) => void): Canvas[] {
 /** Loads currently in progress, keyed by canvas id. See loadCanvas. */
 const loading = new Map<string, Promise<Canvas | null>>();
 
+/** Frames that arrived for a canvas while it was still loading. See loadCanvas. */
+const early = new Map<string, Buffer[]>();
+
 /**
  * Get a canvas by id, hydrating it from storage if it is not resident.
  * null means no such canvas has ever existed - a resident miss only means "not loaded".
@@ -150,6 +170,13 @@ export async function loadCanvas(id: string): Promise<Canvas | null> {
         const cfg = getCanvasConfig(id);
         if (!cfg) return null;
 
+        // Subscribe BEFORE reading the board. The other way round leaves a gap: a change
+        // published after the read but before the subscribe is in neither, and this process
+        // stays wrong about that pixel until someone repaints it. Subscribed first, a
+        // change lands in the read, in `early`, or in both - and applying it twice is harmless.
+        early.set(id, []);
+        await subscribeCanvas(id);
+
         const canvas = createCanvas(cfg);
 
         const bytes = await loadBoard(id);
@@ -162,9 +189,15 @@ export async function loadCanvas(id: string): Promise<Canvas | null> {
             await writeBoard(canvas);
         }
 
+        // In the order Redis delivered them, so the result matches every other process.
+        for (const frame of early.get(id) ?? []) applyToBoard(canvas, frame);
+
         putResident(canvas);
         return canvas;
-    })().finally(() => loading.delete(id));
+    })().finally(() => {
+        loading.delete(id);
+        early.delete(id);
+    });
 
     loading.set(id, load);
     return load;
@@ -208,12 +241,75 @@ export function broadcast(canvas: Canvas, payload: Uint8Array) {
     for (const sock of canvas.clients) {
         try {
             sock.send(payload);
+            metrics.framesOut += 1;
+            metrics.bytesOut += payload.length;
         } catch {
             dead.push(sock);
         }
     }
     for (const d of dead) {
         removeClient(d);
+    }
+}
+
+
+/**
+ * A frame published for this canvas by any process, this one included: update the board
+ * and queue it for our clients (sendPending). Every process applies the same frames in the
+ * same order (Redis's), so every copy of the board ends up the same.
+ */
+export function applyFrame(id: string, frame: Buffer) {
+    metrics.busFramesIn += 1;
+    const canvas = peekResident(id);
+    if (!canvas) {
+        early.get(id)?.push(frame);     // still loading; applied once the board is in
+        return;
+    }
+    applyToBoard(canvas, frame);
+}
+
+function applyToBoard(canvas: Canvas, frame: Buffer) {
+    const view = viewOf(frame);
+    switch (view.getUint8(0)) {
+        case MSG.DELTA:
+            for (const p of decodeDelta(view)) {
+                const idx = index(p.x, p.y, canvas.w);
+                canvas.board[idx] = p.colour;
+                canvas.outgoing.set(idx, p.colour);     // last write wins, as in `dirty`
+            }
+            break;
+        case MSG.CLEAR:
+            canvas.board.fill(EMPTY);
+            // Pixels painted here since the last tick came before the clear. Flushed after
+            // it, they would put a few random pixels back on a blank board.
+            canvas.dirty.clear();
+            // Same for pixels heard but not yet sent: the clear supersedes them.
+            canvas.outgoing.clear();
+            canvas.clearPending = true;
+            break;
+    }
+}
+
+/**
+ * Send our clients everything heard since the last tick: a CLEAR if there was one, then
+ * one DELTA of every pixel, whichever process painted it. Called once per tick per canvas.
+ */
+export function sendPending(canvas: Canvas) {
+    if (canvas.clearPending) {
+        broadcast(canvas, encodeClear());
+        canvas.clearPending = false;
+    }
+    if (canvas.outgoing.size === 0) return;
+    metrics.sendingTicks += 1;
+
+    const pixels: Pixel[] = [];
+    for (const [idx, colour] of canvas.outgoing) {
+        pixels.push({ x: idx % canvas.w, y: Math.floor(idx / canvas.w), colour });
+    }
+    canvas.outgoing = new Map();
+    // Split on the u16 count, same reason as in the flush.
+    for (let i = 0; i < pixels.length; i += MAX_DELTA_PIXELS) {
+        broadcast(canvas, encodeDelta(pixels.slice(i, i + MAX_DELTA_PIXELS)));
     }
 }
 

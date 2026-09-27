@@ -1,0 +1,17 @@
+# One address in front of both server processes (milestone 07).
+#   npm run dev          # process on :8000
+#   npm run dev:8001     # process on :8001
+#   npm run proxy        # this, on :8080 - open http://localhost:8080
+#
+# Caddy passes WebSocket upgrades through on its own; nginx has to be told to.
+# Any request can land on either process, which is fine: pub/sub keeps them in step and
+# both read accounts and rooms from the same SQLite file.
+{
+	admin off
+}
+
+:8080 {
+	reverse_proxy localhost:8000 localhost:8001 {
+		lb_policy round_robin
+	}
+}

@@ -10,15 +10,19 @@ import { readFileSync } from "node:fs";
 import { MAIN_SIZE, index} from "../shared/constants.js";
 import { PALETTE_SIZE, EMPTY } from "../shared/palette.js";
 import {
-    peekResident, loadCanvas, addClient, removeClient, broadcast, type Canvas, allResident,
+    peekResident, loadCanvas, addClient, removeClient, type Canvas, allResident,
     newCanvasId, newJoinCode, MAIN_ID, sweep, canEnter, readCanvas, dropResident, clientOf,
-    type CanvasConfig, type Client,
+    applyFrame, sendPending, type CanvasConfig, type Client,
 } from "./canvas.js";
 import {
     saveCanvasConfig, getCanvasConfig, getCanvasByOwner, listCanvases, setCanvasSize,
     setCanvasPrivacy, deleteCanvasConfig, addMember, type User,
 } from "./db.js";
-import { persistDirty, writeBoard, deleteBoard } from "./redis.js";
+import {
+    persistDirty, writeBoard, deleteBoard, publishFrame, publishRoomEvent, onBusMessage,
+    unsubscribeCanvas, type RoomEvent,
+} from "./redis.js";
+import { metrics, snapshot } from "./metrics.js";
 import { TICK_HZ, startTicker } from "./hub.js";
 import { deflateSync } from "node:zlib";
 import { renderPng } from "./export.js";
@@ -121,6 +125,8 @@ app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest)
         // drop out of bound numbers. EMPTY is allowed: that is the eraser.
         if (x >= canvas.w || y >= canvas.h) return;
         if (colour !== EMPTY && colour >= PALETTE_SIZE) return;
+
+        metrics.pixelsIn += 1;
 
         const idx = index(x, y, canvas.w);
         canvas.board[idx] = colour;
@@ -254,18 +260,35 @@ function requireOwnRoom(req: FastifyRequest, reply: FastifyReply): { user: User;
 }
 
 /**
- * Close the sockets of everyone no longer allowed in - after a room goes private or gets
- * a new code. Changing the lock should lock out whoever is already inside, too.
+ * A room's settings changed, maybe on another process. Routes never act on their own
+ * sockets directly: they publish, and every process - the one that handled the request
+ * included - comes through here and fixes up the clients it holds.
  */
-function kickDisallowed(cfg: CanvasConfig) {
-    const live = peekResident(cfg.id);
+function onRoomEvent(id: string, event: RoomEvent) {
+    const live = peekResident(id);
     if (!live) return;
+
+    const cfg = event === "changed" ? getCanvasConfig(id) : null;
+    if (!cfg) {
+        // Deleted. Drop pending pixels first, or a flush would write them back to Redis
+        // after the board was removed and leave an orphan key.
+        live.dirty.clear();
+        for (const sock of [...live.clients]) sock.close(4004, "canvas deleted");
+        dropResident(id);
+        unsubscribeCanvas(id);
+        return;
+    }
+
+    // The resident copy of the config is what later checks read - keep it current.
     live.isPublic = cfg.isPublic;
     live.joinCode = cfg.joinCode;
+    // Changing the lock should lock out whoever is already inside, too.
     for (const sock of [...live.clients]) {
         if (!canEnter(cfg, clientOf(sock)?.userId)) sock.close(4003, "private room");
     }
 }
+
+onBusMessage({ frame: applyFrame, room: onRoomEvent });
 
 app.post("/api/canvas", async (req, reply) => {
     const user = requireUser(req, reply);
@@ -340,7 +363,7 @@ app.patch("/api/c/:cid", async (req, reply) => {
     // Rooms from before codes existed have none, so make one the first time it goes private.
     const joinCode = own.cfg.joinCode ?? newJoinCode();
     setCanvasPrivacy(own.cfg.id, isPublic, joinCode, false);
-    kickDisallowed({ ...own.cfg, isPublic, joinCode });
+    await publishRoomEvent(own.cfg.id, "changed");
     return { ok: true };
 });
 
@@ -351,7 +374,7 @@ app.post("/api/c/:cid/code", async (req, reply) => {
 
     const joinCode = newJoinCode();
     setCanvasPrivacy(own.cfg.id, own.cfg.isPublic, joinCode, true);
-    kickDisallowed({ ...own.cfg, joinCode });
+    await publishRoomEvent(own.cfg.id, "changed");
     return { code: joinCode };
 });
 
@@ -379,16 +402,29 @@ app.delete("/api/c/:cid", async (req, reply) => {
     if (!own) return;
     const { id } = own.cfg;
 
-    // Config first, so nobody can join while the rest is torn down.
+    // Config first, so nobody can join while the rest is torn down. Every process holding
+    // it closes its own sockets when the event arrives (onRoomEvent).
     deleteCanvasConfig(id);
-    const live = peekResident(id);
-    if (live) {
-        for (const sock of [...live.clients]) sock.close(4004, "canvas deleted");
-        dropResident(id);
-    }
+    await publishRoomEvent(id, "deleted");
     await deleteBoard(id);
     app.log.info(`canvas ${id} deleted by user ${own.user.id}`);
     return { ok: true };
+});
+
+
+/** ========== metrics ========== */
+
+/**
+ * This process's numbers. Behind a proxy each request may land on a different process,
+ * so it says which one it is.
+ */
+app.get("/metrics", async () => {
+    let connections = 0, residentCanvases = 0;
+    for (const canvas of allResident()) {
+        connections += canvas.clients.size;
+        residentCanvases += 1;
+    }
+    return { port: PORT, pid: process.pid, connections, residentCanvases, ...snapshot() };
 });
 
 
@@ -455,7 +491,8 @@ async function clearCanvas(canvas: Canvas): Promise<void> {
     // flush as a delta after the CLEAR and put a few random pixels back.
     canvas.dirty.clear();
     await writeBoard(canvas);
-    broadcast(canvas, encodeClear());
+    // Every process (this one too) clears its copy and tells its clients - see applyFrame.
+    await publishFrame(canvas.id, encodeClear());
 }
 
 app.post("/api/c/:cid/clear", async (req, reply) => {
@@ -501,10 +538,18 @@ if (process.env.DEV_TOOLS === "1") {
  *  Single loop at 20Hz iterating all resident canvases and flush
  *  */
 function flushAll(): void {
+    const t0 = performance.now();
     for (const canvas of allResident()) flushCanvas(canvas);
+    const t1 = performance.now();
+    // What the bus delivered since last tick goes out now, one frame per canvas.
+    for (const canvas of allResident()) sendPending(canvas);
+    const t2 = performance.now();
+    metrics.tickMs.push(t2 - t0);
+    metrics.fanoutMs.push(t2 - t1);
+    metrics.ticks += 1;
 }
 
-/** Broadcast and persist one canvas's pending pixels. Also what eviction calls. */
+/** Persist and publish one canvas's pending pixels. Also what eviction calls. */
 function flushCanvas(canvas: Canvas): void {
     if (canvas.dirty.size === 0) return;
 
@@ -526,8 +571,13 @@ function flushCanvas(canvas: Canvas): void {
     // The DELTA count is a u16, so a tick that dirties more pixels than that has to
     // go out as several frames - one oversized frame would wrap the count to 0 and
     // the client would drop every pixel in it silently.
+    //
+    // Published, not broadcast: the subscription sends it to clients on every process,
+    // this one included. Published after persistDirty on the same connection, so no
+    // process can hear about a pixel before Redis holds it.
     for (let i = 0; i < pixels.length; i += MAX_DELTA_PIXELS) {
-        broadcast(canvas, encodeDelta(pixels.slice(i, i + MAX_DELTA_PIXELS)));
+        publishFrame(canvas.id, encodeDelta(pixels.slice(i, i + MAX_DELTA_PIXELS)))
+            .catch(err => app.log.error(err, "publishing delta failed"));
     }
 }
 
@@ -541,7 +591,11 @@ app.addHook("onReady", async () => {
     app.log.info(`ticking at ${TICK_HZ}Hz`);
 
     setInterval(() => {
-        for (const canvas of sweep(flushCanvas)) app.log.info(`evicted ${canvas.id}`);
+        for (const canvas of sweep(flushCanvas)) {
+            // Synchronously, so it can never land after a reload's subscribe (see redis.ts).
+            unsubscribeCanvas(canvas.id);
+            app.log.info(`evicted ${canvas.id}`);
+        }
     }, SWEEP_MS);
 })
 
