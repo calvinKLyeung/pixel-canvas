@@ -40,9 +40,11 @@
     </style>
     <title>{{TITLE}}</title>
   </head>
-  <body>
+  <!-- Read by main.ts for display only; the server enforces both for real -->
+  <body data-name="{{NAME}}" data-cooldown-ms="{{COOLDOWN_MS}}" data-owner-id="{{OWNER_ID}}">
     <main class="container">
       <h1>Pixel Canvas</h1>
+      <div id="auth"></div>
       <p><a href="/lobby.html">All canvases</a></p>
       <p id="status">Connecting...</p>
       <div id="stage" style="position:relative;width:768px;max-width:100%;
@@ -53,12 +55,25 @@
         <canvas id="overlay" style="position:absolute;inset:0;
             width:100%;height:100%;pointer-events:none"></canvas>
       </div>
+      <div id="cooldown" style="display:none">
+        <progress id="cdbar" value="0" max="100"></progress>
+        <small id="cdtext"></small>
+      </div>
       <div id="palette"></div>
+      <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin:1rem 0">
+        <label><input type="checkbox" id="eraser"> Eraser</label>
+        <label><input type="checkbox" id="draftmode"> Draft mode</label>
+        <select id="brush" aria-label="Brush size (draft mode)" style="width:auto;margin:0"></select>
+        <small id="draftcount"></small>
+        <button id="cleardraft" class="secondary outline" style="width:auto;margin:0">Clear draft</button>
+      </div>
+      <p><small id="notice"></small></p>
       <!-- main.ts appends the canvas id; alpha is left at its transparent default -->
       <a id="download" href="/board.png?scale=8" download="canvas.png"
          role="button">Download PNG</a>
       <a id="download-grid" href="/board.png?scale=8&amp;grid=1" download="canvas-grid.png"
          role="button" class="secondary">With grid</a>
+      <button id="clearall" class="contrast outline" hidden>Clear canvas for everyone</button>
     </main>
     <script type="module" src="/main.js"></script>
   </body>

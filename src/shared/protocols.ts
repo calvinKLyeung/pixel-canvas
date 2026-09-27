@@ -8,9 +8,16 @@
  *      u16  width
  *      u16  height
  *      ... zlib deflated board of bytes, one per pixel
+ *
+ *   REJECTED (server -> client) a placement was refused by the cooldown
+ *      u8   type = 4
+ *      u16  waitMs   milliseconds until the next paint, capped at 65535
+ *
+ *   CLEAR (server -> client) the whole board is now EMPTY
+ *      u8   type = 5
  */
 // type def
-// 4-6 are claimed now but nothing sends them until 05 / 05c. Milestone 08's event log
+// 6 is claimed but nothing sends it yet. Milestone 08's event log
 // stamps every entry with one of these ids and is append-only, so settling the
 // numbering before the log exists is free - renumbering afterwards is not.
 type MsgShape = {
@@ -88,7 +95,7 @@ export function decodePlace(view: DataView): Pixel {
 }
 
 /** DELTA of pixel: server -> client, 3 + 5n bytes of info, where n = number of pixels  */
-export function encodeDelta(pixels: Pixel[]): Uint8Array {
+export function encodeDelta(pixels: Pixel[]): Uint8Array<ArrayBuffer> {
     const buff = new Uint8Array(3 + 5 * pixels.length);
     const view = new DataView(buff.buffer);
     view.setUint8(0, MSG.DELTA);
@@ -117,4 +124,30 @@ export function decodeDelta(view: DataView): Pixel[] {
         off += 5; // next pixel
     }
     return out;
+}
+
+/** ========== REJECTED: server -> client, 3 bytes ========== */
+export const MAX_WAIT_MS = 65535;
+
+export function encodeRejected(waitMs: number): Uint8Array {
+    const buff = new Uint8Array(3);
+    const view = new DataView(buff.buffer);
+    view.setUint8(0, MSG.REJECTED);
+    // setUint16 does not throw on 70000 - it wraps to 4464, and the client would show a
+    // 4 second wait for a 70 second cooldown. Clamp before writing any fixed-width int.
+    view.setUint16(1, Math.min(waitMs, MAX_WAIT_MS), true);
+    return buff;
+}
+
+export function decodeRejected(view: DataView): number {
+    return view.getUint16(1, true);
+}
+
+/**
+ * ========== CLEAR: server -> client, 1 byte ==========
+ * "Everything is EMPTY" needs no coordinates. As a delta the same news would be 5 bytes
+ * per pixel - 327 KB for a 256x256 board, sent to every client.
+ */
+export function encodeClear(): Uint8Array {
+    return new Uint8Array([MSG.CLEAR]);
 }

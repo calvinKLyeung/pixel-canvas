@@ -165,11 +165,12 @@ export async function loadCanvas(id: string): Promise<Canvas | null> {
 }
 
 
-/** new client , serves as reference to socket, canvas, bucket, userId*/
+/** new client , serves as reference to socket, canvas, cooldown identity, userId*/
 export interface Client {
     sock: WebSocket;
     canvas: Canvas;
-    // bucket: Bucket;
+    /** Whose cooldown bucket this connection spends: user id if logged in, else IP. */
+    identity: string | number;
     userId?: number;
 }
 
@@ -177,10 +178,10 @@ export interface Client {
 // but now each canvas also tracks its own set for broadcasting
 const clients = new Map<WebSocket, Client>();
 
-export function addClient(sock: WebSocket, canvas: Canvas) {
+export function addClient(client: Client) {
     // Client canvas and Canvas client reference each other, must add together
-    clients.set(sock, { sock, canvas });
-    canvas.clients.add(sock);
+    clients.set(client.sock, client);
+    client.canvas.clients.add(client.sock);
 }
 
 export function removeClient(sock: WebSocket) {

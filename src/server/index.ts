@@ -1,25 +1,35 @@
 import Fastify from "fastify";
-import type { FastifyRequest } from "fastify";
+import type { FastifyRequest, FastifyReply } from "fastify";
 import WebSocket from "ws";  // for server websocket
 import websocket from "@fastify/websocket"
 import fastifyStatic from "@fastify/static";
+import cookie from "@fastify/cookie";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 
 import { DEFAULT_W, DEFAULT_H, index} from "../shared/constants.js";
-import { PALETTE_SIZE } from "../shared/palette.js";
+import { PALETTE_SIZE, EMPTY } from "../shared/palette.js";
 import {
     peekResident, loadCanvas, addClient, removeClient, broadcast, type Canvas, allResident,
     newCanvasId, MAIN_ID, sweep,
-    type CanvasConfig
+    type CanvasConfig, type Client,
 } from "./canvas.js";
-import { saveCanvasConfig, getCanvasConfig, listPublicCanvasConfigs } from "./db.js";
-import { persistDirty } from "./redis.js";
+import {
+    saveCanvasConfig, getCanvasConfig, listPublicCanvasConfigs, setCanvasCooldown,
+    saveDraft, loadDraft,
+} from "./db.js";
+import { persistDirty, writeBoard } from "./redis.js";
 import { TICK_HZ, startTicker } from "./hub.js";
 import { deflateSync } from "node:zlib";
 import { renderPng } from "./export.js";
-import { MSG, viewOf, decodePlace, encodeDelta, MAX_DELTA_PIXELS, type Pixel } from "../shared/protocols.js";
+import {
+    MSG, viewOf, decodePlace, encodeDelta, MAX_DELTA_PIXELS, type Pixel,
+    encodeRejected, encodeClear,
+} from "../shared/protocols.js";
 import {type CreateRequest, validateCreate} from "../shared/canvasConfig.js";
+import { Bucket, bucketFor, sweepBuckets } from "./limits.js";
+import { register, login, issueSession, userFromToken, endSession, SESSION_DAYS } from "./auth.js";
+import { MAX_DRAFT } from "../shared/draft.js";
 
 
 
@@ -34,7 +44,19 @@ await app.register(fastifyStatic, {
     // link preview describes the canvas being shared. Raw, it would show {{TITLE}}.
     index: false,
 });
+await app.register(cookie);
 await app.register(websocket);
+
+// Drafts are PUT as raw bytes in the DELTA format. bodyLimit turns an oversized one into a
+// 413 before the handler runs - MAX_DRAFT is only enforced in the browser, which is not ours.
+app.addContentTypeParser(
+    "application/octet-stream",
+    { parseAs: "buffer", bodyLimit: 3 + 5 * MAX_DRAFT },
+    (_req, body, done) => done(null, body),
+);
+
+/** The landing canvas's cooldown. */
+const MAIN_COOLDOWN_MS = 5_000;
 
 /**
  * main is the only canvas not created through POST /api/canvas, so nothing else ever
@@ -46,11 +68,15 @@ async function ensureMain(): Promise<void> {
         name: MAIN_ID,
         w: DEFAULT_W,
         h: DEFAULT_H,
-        cooldownMs: 0,
+        cooldownMs: MAIN_COOLDOWN_MS,
         ownerId: null,
         isPublic: true,
         createdAt: Date.now(),
     });
+    // The save above never overwrites, and main rows from before the cooldown existed hold
+    // 0 - which would make every paint on main free. The cooldown is safe to force;
+    // the dimensions are not (see below).
+    setCanvasCooldown(MAIN_ID, MAIN_COOLDOWN_MS);
 
     // The save is a no-op if main already exists, so let loadCanvas read the row back
     // rather than trusting the defaults above: an existing main keeps its stored
@@ -74,8 +100,14 @@ app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest)
     // so adding it now would leave a dead socket in canvas.clients forever.
     if (sock.readyState !== WebSocket.OPEN) return;
 
+    // The upgrade is an ordinary HTTP request, so the session cookie arrives with it and
+    // there is nothing to add to the protocol. The bucket follows the person, not the
+    // socket: refreshing gets a new socket and the same cooldown.
+    const user = userFromToken(req.cookies.session);
+    const client: Client = { sock, canvas, identity: user?.id ?? req.ip, userId: user?.id };
+
     // add socket to clients
-    addClient(sock, canvas);
+    addClient(client);
     // sock.send(JSON.stringify({ t: "snapshot", board: Array.from(board) }));
     sock.send(encodeSnapshot(canvas));
     app.log.info(`connected to ${canvas.id} - now have ${canvas.clients.size} websockets in total`);
@@ -94,8 +126,18 @@ app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest)
         const { x, y, colour } = decodePlace(view);
 
         // Types no longer exists at runtime, have to validate everything coming from the wire
-        // drop out of bound numbers
-        if (x >= canvas.w || y >= canvas.h || colour >= PALETTE_SIZE) return;
+        // drop out of bound numbers. EMPTY is an erase, priced below like any other colour.
+        if (x >= canvas.w || y >= canvas.h) return;
+        if (colour !== EMPTY && colour >= PALETTE_SIZE) return;
+
+        // Validated first, charged second: garbage must not cost a token, or anyone could
+        // drain someone else's bucket by sending it malformed messages.
+        // Looked up per paint rather than held on the client - see sweepBuckets.
+        const bucket = bucketFor(client.identity);
+        if (!bucket.take(canvas.cooldownMs)) {
+            sock.send(encodeRejected(bucket.msUntilNext(canvas.cooldownMs)));
+            return;
+        }
 
         const idx = index(x, y, canvas.w);
         canvas.board[idx] = colour;
@@ -140,7 +182,12 @@ function pageFor(cfg: CanvasConfig, origin: string): string {
         .replaceAll("{{TITLE}}", escapeHtml(`${cfg.name} - pixel canvas`))
         .replaceAll("{{DESCRIPTION}}", escapeHtml(`A shared ${cfg.w}x${cfg.h} canvas anyone can paint on.`))
         .replaceAll("{{URL}}", escapeHtml(`${origin}/c/${id}`))
-        .replaceAll("{{IMAGE}}", escapeHtml(`${origin}/board.png?alpha=0&c=${id}`));
+        .replaceAll("{{IMAGE}}", escapeHtml(`${origin}/board.png?alpha=0&c=${id}`))
+        // For the page script: the draft time estimate and whether to offer clear-all.
+        // The server still checks both - these only decide what the page shows.
+        .replaceAll("{{NAME}}", escapeHtml(cfg.name))
+        .replaceAll("{{COOLDOWN_MS}}", String(cfg.cooldownMs))
+        .replaceAll("{{OWNER_ID}}", String(cfg.ownerId ?? ""));
 }
 
 /** The canonical URL for a canvas. */
@@ -196,7 +243,8 @@ app.post("/api/canvas", async (req, reply) => {
     const error = validateCreate(req.body);
     if (error) return reply.code(400).send({ error: error });
 
-    // const user = userFromToken(req.cookies?.session); // always null for now
+    // Anonymous canvases are allowed and stay ownerless, which means nobody can clear them.
+    const user = userFromToken(req.cookies.session);
     const { name, w, h, cooldownMs } = req.body as CreateRequest;
 
     const cfg: CanvasConfig = {
@@ -205,8 +253,7 @@ app.post("/api/canvas", async (req, reply) => {
         w,
         h,
         cooldownMs,
-        // ownerId: user?.id ?? null,
-        ownerId: null,
+        ownerId: user?.id ?? null,
         isPublic: true,
         createdAt: Date.now(),
     }
@@ -231,6 +278,150 @@ app.get("/api/canvases", async () => {
         clients: peekResident(cfg.id)?.clients.size ?? 0,
     }));
 });
+
+
+/** ========== accounts ========== */
+
+/**
+ * httpOnly: page scripts cannot read it, so an XSS bug cannot steal the session.
+ * secure: HTTPS only, so it cannot be sniffed - off in development, localhost is plain HTTP.
+ * sameSite lax: not sent on cross-site POSTs, which blocks CSRF against our routes.
+ */
+function setSessionCookie(reply: FastifyReply, token: string) {
+    reply.setCookie("session", token, {
+        path: "/",
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        maxAge: SESSION_DAYS * 24 * 3600,
+    });
+}
+
+app.post("/api/register", async (req, reply) => {
+    const { name, password } = (req.body ?? {}) as { name?: unknown; password?: unknown };
+    const result = await register(name, password);
+    if ("error" in result) return reply.code(400).send({ error: result.error });
+
+    setSessionCookie(reply, issueSession(result.id));
+    return { ok: true };
+});
+
+app.post("/api/login", async (req, reply) => {
+    const { name, password } = (req.body ?? {}) as { name?: unknown; password?: unknown };
+    const user = await login(name, password);
+    // One message for "no such name" and "wrong password" - see login().
+    if (!user) return reply.code(401).send({ error: "wrong name or password" });
+
+    setSessionCookie(reply, issueSession(user.id));
+    return { ok: true };
+});
+
+app.post("/api/logout", async (req, reply) => {
+    endSession(req.cookies.session);     // the row, so a copied cookie stops working too
+    reply.clearCookie("session", { path: "/" });
+    return { ok: true };
+});
+
+/** Who the page is logged in as. The cookie is httpOnly, so the page has to ask. */
+app.get("/api/me", async (req, reply) => {
+    const user = userFromToken(req.cookies.session);
+    if (!user) return reply.code(401).send({ error: "not logged in" });
+    return { id: user.id, name: user.name, isAdmin: user.isAdmin };
+});
+
+
+/** ========== server-side drafts, so a draft follows you between devices ========== */
+
+app.put("/api/c/:cid/draft", async (req, reply) => {
+    const user = userFromToken(req.cookies.session);
+    if (!user) return reply.code(401).send();
+
+    // Checked first so a bad id is a 404. Left to the foreign key it is a raw SQLite
+    // error thrown into this handler, and the client sees a 500.
+    const { cid } = req.params as { cid: string };
+    if (!getCanvasConfig(cid)) return reply.code(404).send();
+
+    // Only octet-stream bodies are Buffers; a JSON body would be an object here.
+    if (!Buffer.isBuffer(req.body)) return reply.code(415).send();
+
+    saveDraft(user.id, cid, req.body);
+    return { ok: true };
+});
+
+app.get("/api/c/:cid/draft", async (req, reply) => {
+    const user = userFromToken(req.cookies.session);
+    if (!user) return reply.code(401).send();
+
+    const { cid } = req.params as { cid: string };
+    const data = loadDraft(user.id, cid);
+    // 204 is "never saved one here", which the page treats differently from an empty draft.
+    if (!data) return reply.code(204).send();
+    return reply.type("application/octet-stream").send(data);
+});
+
+
+/** ========== clearing a whole canvas ========== */
+
+/**
+ * Wipe a board everywhere at once. One Redis SET of the whole board rather than a
+ * SETRANGE per pixel, and one CLEAR byte to clients rather than a delta of every pixel:
+ * the normal write path is built for single pixels, and bulk changes want their own.
+ */
+async function clearCanvas(canvas: Canvas): Promise<void> {
+    canvas.board.fill(EMPTY);
+    // Pixels painted earlier this tick are about to be erased anyway. Left in, they would
+    // flush as a delta after the CLEAR and put a few random pixels back.
+    canvas.dirty.clear();
+    await writeBoard(canvas);
+    broadcast(canvas, encodeClear());
+}
+
+/** One clear per canvas per minute, so an owner cannot spam every viewer with them. */
+const CLEAR_COOLDOWN_MS = 60_000;
+const clearBuckets = new Map<string, Bucket>();
+
+app.post("/api/c/:cid/clear", async (req, reply) => {
+    const user = userFromToken(req.cookies.session);
+    if (!user) return reply.code(401).send({ error: "log in first" });
+
+    const { cid } = req.params as { cid: string };
+    const canvas = await loadCanvas(cid);
+    if (!canvas) return reply.code(404).send({ error: "no such canvas" });
+
+    // main's ownerId is null, so only an admin can ever clear it - no special case needed.
+    if (canvas.ownerId !== user.id && !user.isAdmin) {
+        return reply.code(403).send({ error: "not your canvas" });
+    }
+
+    // This destroys other people's work for good, so make it hard to do by accident:
+    // the caller has to type the canvas's name, like deleting a GitHub repository.
+    const { confirmName } = (req.body ?? {}) as { confirmName?: unknown };
+    if (confirmName !== canvas.name) {
+        return reply.code(400).send({ error: "name does not match" });
+    }
+
+    let limit = clearBuckets.get(cid);
+    if (!limit) clearBuckets.set(cid, limit = new Bucket(1));
+    if (!limit.take(CLEAR_COOLDOWN_MS)) {
+        return reply.code(429).send({ error: "cleared too recently, try again in a minute" });
+    }
+
+    await clearCanvas(canvas);
+    app.log.info(`canvas ${cid} cleared by user ${user.id}`);
+    return { ok: true };
+});
+
+// A board full of test scribbles gets in the way of testing almost everything else.
+// No auth at all, so it must never be reachable by accident: opt-in, and loud about it.
+if (process.env.DEV_TOOLS === "1") {
+    app.post("/api/dev/c/:cid/clear", async (req, reply) => {
+        const canvas = await loadCanvas((req.params as { cid: string }).cid);
+        if (!canvas) return reply.code(404).send({ error: "no such canvas" });
+        await clearCanvas(canvas);
+        return { ok: true };
+    });
+    app.log.warn("DEV_TOOLS enabled - the unauthenticated dev clear route is open");
+}
 
 
 /**
@@ -279,6 +470,7 @@ app.addHook("onReady", async () => {
 
     setInterval(() => {
         for (const canvas of sweep(flushCanvas)) app.log.info(`evicted ${canvas.id}`);
+        sweepBuckets();
     }, SWEEP_MS);
 })
 

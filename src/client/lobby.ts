@@ -1,5 +1,9 @@
 import { DEFAULT_W, DEFAULT_H, MIN_DIM, MAX_DIM, MIN_COOLDOWN, MAX_COOLDOWN } from "../shared/constants.js";
 import { validateCreate } from "../shared/canvasConfig.js";
+import { mountAuth } from "./auth.js";
+
+// Logged in, a canvas you create is yours - which is what lets you clear it later.
+mountAuth(document.getElementById("auth")!);
 
 /** One row of GET /api/canvases */
 interface CanvasSummary {

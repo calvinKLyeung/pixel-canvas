@@ -1,3 +1,6 @@
+import { PALETTE, EMPTY } from "../shared/palette.js";
+import { draft, toXY } from "./draft.js";
+
 let overlay: HTMLCanvasElement;
 let overlayContext: CanvasRenderingContext2D;
 
@@ -35,7 +38,29 @@ export function resizeOverlay() {
     // working in CSS pixel for now
     overlayContext.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    drawGrid();
+    drawOverlay();
+}
+
+/** Grid plus pending draft pixels. Call whenever the draft changes. */
+export function drawOverlay() {
+    drawGrid();                 // clears and redraws the grid
+
+    const rect = overlay.getBoundingClientRect();
+    const cell = rect.width / boardW;
+    // ceil so fractional cells overlap by a hair instead of leaving hairline gaps
+    const size = Math.ceil(cell);
+
+    // Translucent is the whole affordance: it is the only thing saying "not real yet".
+    overlayContext.globalAlpha = 0.6;
+    for (const [idx, colour] of draft) {
+        const [x, y] = toXY(idx);
+        // A pending erase in white would look exactly like a pending white paint. The
+        // checkerboard's blue-grey is the colour of "unpainted", and no palette colour.
+        const c = colour === EMPTY ? [163, 179, 196] : PALETTE[colour]!;
+        overlayContext.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+        overlayContext.fillRect(x * cell, y * cell, size, size);
+    }
+    overlayContext.globalAlpha = 1;
 }
 
 export function drawGrid() {

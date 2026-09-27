@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
     encodeDelta, decodeDelta, encodePlace, decodePlace,
     viewOf, MSG, MAX_DELTA_PIXELS, type Pixel,
+    encodeRejected, decodeRejected, encodeClear, MAX_WAIT_MS,
 } from "../shared/protocols.js";
 
 describe("protocols", () => {
@@ -45,5 +46,17 @@ describe("protocols", () => {
     it("tags messages correctly", () => {
         expect(viewOf(encodePlace({ x: 0, y: 0, colour: 0 })).getUint8(0)).toBe(MSG.PLACE);
         expect(viewOf(encodeDelta([])).getUint8(0)).toBe(MSG.DELTA);
+        expect(viewOf(encodeRejected(0)).getUint8(0)).toBe(MSG.REJECTED);
+        expect(encodeClear()).toEqual(new Uint8Array([MSG.CLEAR]));
+    });
+
+    it("round-trips a rejection", () => {
+        expect(encodeRejected(4_200).length).toBe(3);
+        expect(decodeRejected(viewOf(encodeRejected(4_200)))).toBe(4_200);
+    });
+
+    // Unclamped, 70000 wraps to 4464 and the client shows a 4s wait for a 70s cooldown.
+    it("caps a rejection's wait instead of wrapping it", () => {
+        expect(decodeRejected(viewOf(encodeRejected(70_000)))).toBe(MAX_WAIT_MS);
     });
 });
