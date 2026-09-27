@@ -2,7 +2,7 @@ import type { WebSocket} from "ws";
 import { EMPTY } from "../shared/palette.js"
 import { randomBytes } from "node:crypto";
 import { getCanvasConfig, isMember } from "./db.js";
-import { loadBoard, writeBoard, subscribeCanvas } from "./redis.js";
+import { loadBoard, writeBoard, clearBoard, subscribeCanvas, readEvents } from "./redis.js";
 import {
     MSG, viewOf, decodeDelta, encodeDelta, encodeClear, MAX_DELTA_PIXELS, type Pixel,
 } from "../shared/protocols.js";
@@ -182,10 +182,16 @@ export async function loadCanvas(id: string): Promise<Canvas | null> {
         const bytes = await loadBoard(id);
         if (bytes?.length === cfg.w * cfg.h) {
             canvas.board.set(bytes);
+        } else if (bytes) {
+            // Sized to different dimensions. Start blank and overwrite: writing single
+            // pixels into a key of the wrong length loads back as a board sheared
+            // diagonally. Logged as a CLEAR, because the history before it is in the old
+            // coordinates and a replay must not paint it onto the new board.
+            await clearBoard(canvas, encodeClear());
         } else {
-            // Either nothing is stored yet, or what is stored was sized to different
-            // dimensions. Start blank and overwrite: writing single pixels into a key of
-            // the wrong length loads back as a board sheared diagonally.
+            // Nothing stored: a new canvas, or a board lost from Redis. The log is the
+            // source of truth either way - empty for a new canvas, the art for a lost one.
+            canvas.board.set(await rebuildBoard(cfg));
             await writeBoard(canvas);
         }
 
@@ -209,6 +215,28 @@ export interface Client {
     sock: WebSocket;
     canvas: Canvas;
     userId?: number;
+    /** Messages this connection may still send right now. See withinFloodCap. */
+    floodTokens: number;
+    floodAt: number;
+}
+
+/**
+ * A ceiling on how much one socket can make us parse - not a game rule. A token bucket
+ * rather than a flat per-second count because painting is bursty: one 9x9 stamp is 81
+ * PLACEs, and a fast 9x9 sweep across a 512 board is a few thousand in under a second.
+ * The burst covers that; the rate is what a runaway loop cannot stay under for long.
+ */
+export const FLOOD_BURST = 10_000;
+export const FLOOD_RATE = 2_000;    // per second
+
+/** Spend one message. False means the connection is over the cap. */
+export function withinFloodCap(client: Client, now = Date.now()): boolean {
+    const refill = (now - client.floodAt) / 1000 * FLOOD_RATE;
+    client.floodTokens = Math.min(FLOOD_BURST, client.floodTokens + refill);
+    client.floodAt = now;
+    if (client.floodTokens < 1) return false;
+    client.floodTokens -= 1;
+    return true;
 }
 
 // Still keyed by socket for O(1) removal on disconnect
@@ -288,6 +316,32 @@ function applyToBoard(canvas: Canvas, frame: Buffer) {
             canvas.clearPending = true;
             break;
     }
+}
+
+/**
+ * Apply one logged frame to a bare board. The same DELTA and CLEAR handling as
+ * applyToBoard, minus the queues - a replay has nobody to send to. Pixels outside the
+ * board are skipped rather than trusted: index() would wrap them onto the wrong row.
+ */
+export function foldFrame(board: Uint8Array, w: number, h: number, frame: Uint8Array) {
+    const view = viewOf(frame);
+    switch (view.getUint8(0)) {
+        case MSG.DELTA:
+            for (const p of decodeDelta(view)) {
+                if (p.x < w && p.y < h) board[index(p.x, p.y, w)] = p.colour;
+            }
+            break;
+        case MSG.CLEAR:
+            board.fill(EMPTY);
+            break;
+    }
+}
+
+/** A canvas's board as its log says it should be. Blank if the log is empty. */
+export async function rebuildBoard(cfg: CanvasConfig): Promise<Uint8Array> {
+    const board = new Uint8Array(cfg.w * cfg.h).fill(EMPTY);
+    for await (const frame of readEvents(cfg.id)) foldFrame(board, cfg.w, cfg.h, frame);
+    return board;
 }
 
 /**

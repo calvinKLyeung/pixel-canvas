@@ -55,6 +55,17 @@ let board: Uint8Array | null = null;
 let boardW = 0, boardH = 0;
 let sock: WebSocket | null = null;
 
+/**
+ * Reconnecting needs no re-sync step of its own: the server opens every connection with a
+ * SNAPSHOT, which replaces whatever deltas we missed while we were gone.
+ * Declared up here because connect() first runs further down this module's top level.
+ */
+const RETRY_MIN_MS = 1_000, RETRY_MAX_MS = 30_000;
+let retryMs = RETRY_MIN_MS;
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
+/** The server closed us with one of its own codes. Retrying would only be refused again. */
+let refused = false;
+
 function showNotice(text: string) {
     noticeElem.textContent = text;
 }
@@ -64,6 +75,7 @@ const CLOSE_REASONS: Record<number, string> = {
     4001: "Log in to enter this room.",
     4003: "This room is private. Open it from the lobby and enter its code.",
     4004: "This room doesn't exist, or its owner deleted it.",
+    4029: "Disconnected for sending too fast. Reload to carry on.",
 };
 
 // Everything but main needs an account. Ask for one before connecting at all - the
@@ -77,7 +89,21 @@ if (canvasId !== MAIN_ID && !user) {
 
 /**========== the connection ==========*/
 
+function scheduleReconnect() {
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(connect, retryMs);
+    retryMs = Math.min(retryMs * 2, RETRY_MAX_MS);
+}
+
+// A backgrounded phone tab is suspended and its socket dies without a word. Coming back to
+// it, check straight away rather than leaving the person on a frozen board until the timer.
+document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible" || refused || !sock) return;
+    if (sock.readyState === WebSocket.CLOSED || sock.readyState === WebSocket.CLOSING) connect();
+});
+
 function connect() {
+    clearTimeout(retryTimer);
     // sends the upgrade request, causes the 101
     const ws = new WebSocket(`${protocol}//${location.host}/ws?c=${encodeURIComponent(canvasId)}`);
     sock = ws;
@@ -122,6 +148,7 @@ function connect() {
                 board.set(pixels);
                 render(board);
                 statusElem.textContent = "connected";
+                retryMs = RETRY_MIN_MS;     // only once we are properly back, not on open
                 break;
             }
             // server -> client, Place pixels
@@ -147,8 +174,12 @@ function connect() {
     });
 
     ws.addEventListener("close", (e) => {
-        statusElem.textContent = CLOSE_REASONS[e.code] ?? "disconnected";
+        if (ws !== sock) return;    // an old socket closing after a newer one replaced it
+        statusElem.textContent = CLOSE_REASONS[e.code] ?? "disconnected - reconnecting";
         if (e.code === 4001) openLogin(() => { location.href = "/"; });
+        // 4000-4999 are the server turning us away on purpose; trying again gets the same answer.
+        if (e.code >= 4000 && e.code < 5000) refused = true;
+        else scheduleReconnect();
     });
 
     ws.addEventListener("error", (e) => {
@@ -200,21 +231,35 @@ for (const n of BRUSH_SIZES) {
 
 /**========== painting ==========*/
 
-/** Send a brush-sized square centred on (cx, cy). */
-function stamp(cx: number, cy: number) {
-    if (!board || sock?.readyState !== WebSocket.OPEN) return;
+/**
+ * Send a brush-sized square centred on (cx, cy), and paint it into `board` at once rather
+ * than waiting for the server's delta - that round trip is at least a tick plus the
+ * network, and the stroke visibly trails the cursor by it. The delta still overwrites
+ * whatever we guessed, so if someone else won a pixel this tick, theirs shows a moment later.
+ *
+ * Returns whether anything changed, so the caller can render once per pointer event
+ * instead of once per stamp.
+ */
+function stamp(cx: number, cy: number): boolean {
+    if (!board || sock?.readyState !== WebSocket.OPEN) return false;
     const colour = currentColour();
     const r = Math.floor(Number(brushElem.value) / 2);
+    let changed = false;
     for (let dy = -r; dy <= r; dy++) {
         for (let dx = -r; dx <= r; dx++) {
             const x = cx + dx, y = cy + dy;
             if (x < 0 || x >= boardW || y < 0 || y >= boardH) continue;
             // Already that colour: a big brush dragged along overlaps itself constantly,
-            // and resending those would multiply the traffic for no change.
-            if (board[index(x, y, boardW)] === colour) continue;
+            // and resending those would multiply the traffic for no change. Because we
+            // write to `board` below, this also skips pixels sent but not yet confirmed.
+            const idx = index(x, y, boardW);
+            if (board[idx] === colour) continue;
+            board[idx] = colour;
+            changed = true;
             sock.send(encodePlace({ x, y, colour }));
         }
     }
+    return changed;
 }
 
 let drawing = false;
@@ -236,7 +281,7 @@ canvas.addEventListener("pointerdown", (e) => {
     canvas.setPointerCapture(e.pointerId); // keep the events if we leave the canvas
     drawing = true;
     [lastX, lastY] = pos;
-    stamp(pos[0], pos[1]);
+    if (stamp(pos[0], pos[1])) render(board!);
 })
 
 canvas.addEventListener("pointermove", (e) => {
@@ -247,10 +292,12 @@ canvas.addEventListener("pointermove", (e) => {
     if (x === lastX && y === lastY) return; // move to same pixel = nothing to do
 
     // fill the gap, since the last event to what just happened
+    let changed = false;
     line(lastX, lastY, x, y, (px, py) => {
         if (px === lastX && py === lastY) return; // same as starting point = nothing to paint
-        stamp(px, py);
+        if (stamp(px, py)) changed = true;
     });
+    if (changed) render(board!);
     [lastX, lastY] = [x, y];
 })
 

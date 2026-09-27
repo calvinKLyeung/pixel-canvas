@@ -12,20 +12,20 @@ import { PALETTE_SIZE, EMPTY } from "../shared/palette.js";
 import {
     peekResident, loadCanvas, addClient, removeClient, type Canvas, allResident,
     newCanvasId, newJoinCode, MAIN_ID, sweep, canEnter, readCanvas, dropResident, clientOf,
-    applyFrame, sendPending, type CanvasConfig, type Client,
+    applyFrame, sendPending, type CanvasConfig, type Client, withinFloodCap, FLOOD_BURST,
 } from "./canvas.js";
 import {
     saveCanvasConfig, getCanvasConfig, getCanvasByOwner, listCanvases, setCanvasSize,
     setCanvasPrivacy, deleteCanvasConfig, addMember, type User,
 } from "./db.js";
 import {
-    persistDirty, writeBoard, deleteBoard, publishFrame, publishRoomEvent, onBusMessage,
+    persistDirty, clearBoard, deleteBoard, publishFrame, publishRoomEvent, onBusMessage,
     unsubscribeCanvas, type RoomEvent,
 } from "./redis.js";
 import { metrics, snapshot } from "./metrics.js";
 import { TICK_HZ, startTicker } from "./hub.js";
 import { deflateSync } from "node:zlib";
-import { renderPng } from "./export.js";
+import { renderPng, thumbnail, pruneThumbnails } from "./export.js";
 import {
     MSG, viewOf, decodePlace, encodeDelta, MAX_DELTA_PIXELS, type Pixel, encodeClear,
 } from "../shared/protocols.js";
@@ -36,7 +36,10 @@ import { register, login, issueSession, userFromToken, endSession, SESSION_DAYS 
 
 const PORT = Number(process.env.PORT ?? 8000);
 
-const app = Fastify({ logger: true });
+// Deployed, TLS ends at the host's proxy and we are reached over plain HTTP. Trusting its
+// X-Forwarded-Proto is what makes req.protocol say https, so og:url and og:image in
+// pageFor() point at the real address rather than an http:// one that redirects or fails.
+const app = Fastify({ logger: true, trustProxy: true });
 
 /** Always First */
 await app.register(fastifyStatic, {
@@ -100,7 +103,7 @@ app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest)
     // so adding it now would leave a dead socket in canvas.clients forever.
     if (sock.readyState !== WebSocket.OPEN) return;
 
-    const client: Client = { sock, canvas, userId: user?.id };
+    const client: Client = { sock, canvas, userId: user?.id, floodTokens: FLOOD_BURST, floodAt: Date.now() };
 
     // add socket to clients
     addClient(client);
@@ -111,6 +114,18 @@ app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest)
 
     // broadcast to all clients
     sock.on("message", (data: Buffer) => {
+        // Messages already buffered keep arriving after close(). Without this each one
+        // would be parsed, and a flooded socket would count thousands of times below.
+        if (sock.readyState !== WebSocket.OPEN) return;
+
+        // Closed rather than dropped: ignoring a client sending thousands a second still
+        // means parsing every one of them. A reconnect is its own rate limit.
+        if (!withinFloodCap(client)) {
+            metrics.flooded += 1;
+            sock.close(4029, "too many messages");
+            return;
+        }
+
         // nothing to read lol
         if (data.length < 1) return;
 
@@ -227,7 +242,10 @@ app.get("/board.png", async (req, reply) => {
     // scale=1 means unscaled, one image pixel per board pixel
     // format if client edits an export and re-import
 
-    const png = await renderPng(canvas, scale, grid, alpha);
+    // The lobby tile's exact request is the one worth caching - it is the one on a timer.
+    const png = scale === 1 && !grid && alpha
+        ? await thumbnail(canvas)
+        : await renderPng(canvas, scale, grid, alpha);
     return reply
         .type("image/png") // this matters, tell the browser this is an image and not binary garbage
         .header("Cache-Control", "no-cache") // stop app pinning stale canvas when using the img
@@ -490,9 +508,10 @@ async function clearCanvas(canvas: Canvas): Promise<void> {
     // Pixels painted earlier this tick are about to be erased anyway. Left in, they would
     // flush as a delta after the CLEAR and put a few random pixels back.
     canvas.dirty.clear();
-    await writeBoard(canvas);
+    const clear = encodeClear();
+    await clearBoard(canvas, clear);
     // Every process (this one too) clears its copy and tells its clients - see applyFrame.
-    await publishFrame(canvas.id, encodeClear());
+    await publishFrame(canvas.id, clear);
 }
 
 app.post("/api/c/:cid/clear", async (req, reply) => {
@@ -563,27 +582,37 @@ function flushCanvas(canvas: Canvas): void {
         pixels.push({ x: boardIdx % canvas.w, y: Math.floor(boardIdx / canvas.w), colour })
     }
 
-    // Deliberately not awaited - the tick must not block on a network round trip. A
-    // failed write loses those pixels from storage but not from memory, and the next
-    // write to the same pixel repairs it.
-    persistDirty(canvas, dirty).catch(err => app.log.error(err, "persisting board failed"));
-
     // The DELTA count is a u16, so a tick that dirties more pixels than that has to
     // go out as several frames - one oversized frame would wrap the count to 0 and
     // the client would drop every pixel in it silently.
+    const frames: Uint8Array[] = [];
+    for (let i = 0; i < pixels.length; i += MAX_DELTA_PIXELS) {
+        frames.push(encodeDelta(pixels.slice(i, i + MAX_DELTA_PIXELS)));
+    }
+
+    // Logged from here, not from the message handler: `dirty` has already collapsed two
+    // places on one pixel in one tick into the one that won, and the log must record what
+    // the board did, not every attempt.
     //
+    // Deliberately not awaited - the tick must not block on a network round trip. A
+    // failed write loses those pixels from storage but not from memory, and the next
+    // write to the same pixel repairs the board (though not the log).
+    persistDirty(canvas, dirty, frames).catch(err => app.log.error(err, "persisting board failed"));
+
     // Published, not broadcast: the subscription sends it to clients on every process,
     // this one included. Published after persistDirty on the same connection, so no
     // process can hear about a pixel before Redis holds it.
-    for (let i = 0; i < pixels.length; i += MAX_DELTA_PIXELS) {
-        publishFrame(canvas.id, encodeDelta(pixels.slice(i, i + MAX_DELTA_PIXELS)))
-            .catch(err => app.log.error(err, "publishing delta failed"));
+    for (const frame of frames) {
+        publishFrame(canvas.id, frame).catch(err => app.log.error(err, "publishing delta failed"));
     }
 }
 
 
 /** How often to look for canvases to drop from memory. */
 const SWEEP_MS = 60_000;
+
+/** Well inside the ~60 s idle timeout most proxies put on a WebSocket. */
+const KEEPALIVE_MS = 30_000;
 
 /** should run once after everything is wired up */
 app.addHook("onReady", async () => {
@@ -596,7 +625,18 @@ app.addHook("onReady", async () => {
             unsubscribeCanvas(canvas.id);
             app.log.info(`evicted ${canvas.id}`);
         }
+        pruneThumbnails();
     }, SWEEP_MS);
+
+    // Proxies close a WebSocket that has been quiet for about a minute, and someone just
+    // looking at a canvas sends nothing. The browser answers pings on its own.
+    setInterval(() => {
+        for (const canvas of allResident()) {
+            for (const sock of canvas.clients) {
+                if (sock.readyState === WebSocket.OPEN) sock.ping();
+            }
+        }
+    }, KEEPALIVE_MS);
 })
 
 // build the snapshot of the board with header and compressed board data

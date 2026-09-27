@@ -1,0 +1,11 @@
+# Built on macOS, so its native modules would not load on Linux - npm ci rebuilds it inside.
+node_modules
+# Local data. The container gets its database from DB_PATH on a mounted volume.
+*.db
+*.db-wal
+*.db-shm
+public/*.js
+.env
+.git
+.idea
+NOTES.md

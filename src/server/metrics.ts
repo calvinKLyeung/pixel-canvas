@@ -39,6 +39,11 @@ export const metrics = {
     pixelsIn: 0,
     framesOut: 0,
     bytesOut: 0,
+    /**
+     * Connections closed for going over the flood cap, since boot - not reset, because any at
+     * all is worth seeing. Climbing in normal use means the cap is too low.
+     */
+    flooded: 0,
 };
 
 // Event loop utilisation: the fraction of time the process was busy rather than waiting.
@@ -82,6 +87,7 @@ export function snapshot() {
         tickMsMax: metrics.tickMs.max,
         fanoutMsP99: metrics.fanoutMs.p99,
         fanoutMsMax: metrics.fanoutMs.max,
+        flooded: metrics.flooded,
         ...last,
     };
 }

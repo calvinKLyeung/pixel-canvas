@@ -101,4 +101,32 @@ export async function renderPng(
 }
 
 
+/**
+ * Lobby thumbnails, one render shared by every viewer for THUMB_TTL_MS. Every open lobby
+ * asks for every room every 5 s, so uncached this scales with viewers x rooms, not with
+ * anything being painted.
+ */
+const thumbs = new Map<string, { png: Buffer; at: number }>();
+const THUMB_TTL_MS = 5_000;
+
+export async function thumbnail(canvas: Canvas): Promise<Buffer> {
+    const hit = thumbs.get(canvas.id);
+    if (hit && Date.now() - hit.at < THUMB_TTL_MS) return hit.png;
+
+    const png = await renderPng(canvas, 1, false, true);
+    thumbs.set(canvas.id, { png, at: Date.now() });
+    return png;
+}
+
+/**
+ * Drop expired thumbnails. Most belong to canvases that were never resident, so eviction
+ * never sees them - without this the map holds one entry per canvas ever shown, forever.
+ */
+export function pruneThumbnails(now = Date.now()): void {
+    for (const [id, { at }] of thumbs) {
+        if (now - at >= THUMB_TTL_MS) thumbs.delete(id);
+    }
+}
+
+
 
