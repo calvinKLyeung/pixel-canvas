@@ -2,6 +2,8 @@ export interface Me {
     id: number;
     name: string;
     isAdmin: boolean;
+    /** Epoch ms when the account and its room are deleted unless they log in. null for admins. */
+    deleteAt: number | null;
 }
 
 /** Asked once per page. The session cookie is httpOnly, so asking is the only way to know. */
@@ -27,9 +29,10 @@ export async function renderAccount(root: HTMLElement) {
  * this picked its room and its connection while logged out, and reloading into the lobby
  * is simpler than patching that up.
  *
- * `onCancel` runs if they close it without logging in.
+ * `onCancel` runs if they close it without logging in. `goTo` is where a successful login
+ * lands - the lobby unless the caller wants somewhere else, e.g. renewing from a room page.
  */
-export function openLogin(onCancel: () => void = () => {}) {
+export function openLogin(onCancel: () => void = () => {}, goTo = "/lobby.html") {
     const dialog = document.createElement("dialog");
     dialog.innerHTML = `
         <article>
@@ -65,7 +68,7 @@ export function openLogin(onCancel: () => void = () => {}) {
         });
         if (reply.ok) {
             loggedIn = true;
-            location.href = "/lobby.html";
+            location.href = goTo;
             return;
         }
         error.textContent = (await reply.json().catch(() => ({}))).error ?? "something went wrong";

@@ -4,7 +4,9 @@ import { describe, it, expect } from "vitest";
 // hoisted above this line and would open the real file.
 process.env.DB_PATH = ":memory:";
 const { register, login, issueSession, userFromToken, endSession } = await import("../server/auth.js");
-const { getUserByName } = await import("../server/db.js");
+const {
+    getUserByName, getUserById, touchActive, inactiveUserIds, deleteUser, deleteExpiredSessions,
+} = await import("../server/db.js");
 
 describe("accounts", () => {
     it("registers, then logs in only with the right password", async () => {
@@ -53,5 +55,51 @@ describe("sessions", () => {
     it("rejects missing and made-up tokens", () => {
         expect(userFromToken(undefined)).toBeNull();
         expect(userFromToken("not-a-real-token")).toBeNull();
+    });
+});
+
+describe("inactivity", () => {
+    const DAY = 864e5;
+
+    async function user(name: string): Promise<number> {
+        const result = await register(name, "password123");
+        if (!("id" in result)) throw new Error(result.error);
+        return result.id;
+    }
+
+    it("starts the clock at registration and restarts it at every login", async () => {
+        const id = await user("frank");
+        touchActive(id, Date.now() - 40 * DAY);
+        expect(inactiveUserIds(Date.now() - 30 * DAY)).toContain(id);
+
+        await login("frank", "password123");
+        expect(inactiveUserIds(Date.now() - 30 * DAY)).not.toContain(id);
+    });
+
+    it("does not restart the clock on a failed login", async () => {
+        const id = await user("gina");
+        const old = Date.now() - 40 * DAY;
+        touchActive(id, old);
+        await login("gina", "wrong password");
+        expect(getUserById(id)!.lastActiveAt).toBe(old);
+    });
+
+    it("takes the account's sessions with it when deleted", async () => {
+        const id = await user("hank");
+        const token = issueSession(id);
+        deleteUser(id);
+        expect(getUserById(id)).toBeNull();
+        expect(userFromToken(token)).toBeNull();
+    });
+
+    it("clears out expired sessions but keeps live ones", async () => {
+        const id = await user("iris");
+        const token = issueSession(id);
+        deleteExpiredSessions(Date.now());
+        expect(userFromToken(token)?.name).toBe("iris");
+
+        // 31 days on, the 30-day session has expired and is removed.
+        expect(deleteExpiredSessions(Date.now() + 31 * DAY)).toBeGreaterThanOrEqual(1);
+        expect(userFromToken(token)).toBeNull();
     });
 });
