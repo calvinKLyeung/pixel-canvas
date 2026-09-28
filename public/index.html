@@ -38,16 +38,24 @@
         background-size: 16px 16px;
       }
 
-      /* Title left, main button dead centre, sign-in status right. A grid rather than
-         flex space-between, so the button stays centred whatever the sides' widths. */
+      /* Title left, page tabs dead centre, sign-in status right. A grid rather than
+         flex space-between, so the tabs stay centred whatever the sides' widths. */
       .topbar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
                 gap: 1rem; margin-bottom: 1.5rem; }
       .topbar h1 { margin: 0; font-size: 1.6rem; }
-      .topbar [role="button"] { font-size: 1.1rem; padding: .7rem 1.8rem; margin: 0; }
+      /* The current page's tab is underlined, so it is clear which page you are on. */
+      .tabs { display: flex; border-bottom: 1px solid var(--pico-muted-border-color); }
+      .tabs a { padding: .6rem 1.2rem; margin-bottom: -1px; text-decoration: none; font-weight: 500;
+                color: var(--pico-muted-color); border-bottom: 3px solid transparent; }
+      .tabs a:hover { color: var(--pico-color); }
+      .tabs a[aria-current="page"] { color: var(--pico-primary); border-bottom-color: var(--pico-primary); }
       .topbar > :last-child { justify-self: end; }
       @media (max-width: 600px) {
         .topbar { grid-template-columns: 1fr; justify-items: center; }
         .topbar > :last-child { justify-self: center; }
+        /* A full-width bar with equal halves: bigger tap targets, reads as a phone tab bar. */
+        .tabs { justify-self: stretch; }
+        .tabs a { flex: 1; text-align: center; }
       }
     </style>
     <title>{{TITLE}}</title>
@@ -57,7 +65,11 @@
     <main class="container">
       <header class="topbar">
         <h1>Pixel Canvas</h1>
-        <a id="lobbylink" href="/lobby.html" role="button" class="outline">All canvases</a>
+        <!-- main.ts marks the Main tab current when this page is showing main -->
+        <nav class="tabs">
+          <a id="maintab" href="/c/main">Main canvas</a>
+          <a id="lobbylink" href="/lobby.html">All canvases</a>
+        </nav>
         <div id="auth"></div>
       </header>
       <p id="status">Connecting...</p>

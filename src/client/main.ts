@@ -39,6 +39,10 @@ for (const id of ["download", "download-grid"]) {
     link.href += `&c=${encodeURIComponent(canvasId)}`;
 }
 
+// Other rooms share this page but are not main, so no tab is current there. Before the
+// await below, so the tab is not un-highlighted while the login check is in flight.
+if (canvasId === MAIN_ID) document.getElementById("maintab")!.setAttribute("aria-current", "page");
+
 const user = await me;
 renderAccount(document.getElementById("auth")!);
 

@@ -32,15 +32,21 @@
       .new-room { align-items: center; justify-content: center; text-align: center; min-height: 200px;
                   border: 2px dashed var(--pico-muted-border-color); background: none; cursor: pointer; }
 
-      /* Same header as the canvas page: title left, main button centre, sign-in right. */
+      /* Same header as the canvas page: title left, page tabs centre, sign-in right. */
       .topbar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
                 gap: 1rem; margin-bottom: 1.5rem; }
       .topbar h1 { margin: 0; font-size: 1.6rem; }
-      .topbar [role="button"] { font-size: 1.1rem; padding: .7rem 1.8rem; margin: 0; }
+      .tabs { display: flex; border-bottom: 1px solid var(--pico-muted-border-color); }
+      .tabs a { padding: .6rem 1.2rem; margin-bottom: -1px; text-decoration: none; font-weight: 500;
+                color: var(--pico-muted-color); border-bottom: 3px solid transparent; }
+      .tabs a:hover { color: var(--pico-color); }
+      .tabs a[aria-current="page"] { color: var(--pico-primary); border-bottom-color: var(--pico-primary); }
       .topbar > :last-child { justify-self: end; }
       @media (max-width: 600px) {
         .topbar { grid-template-columns: 1fr; justify-items: center; }
         .topbar > :last-child { justify-self: center; }
+        .tabs { justify-self: stretch; }
+        .tabs a { flex: 1; text-align: center; }
       }
     </style>
     <title>Canvas rooms</title>
@@ -49,7 +55,10 @@
     <main class="container">
       <header class="topbar">
         <h1>Rooms</h1>
-        <a href="/c/main" role="button" class="outline">Main canvas</a>
+        <nav class="tabs">
+          <a href="/c/main">Main canvas</a>
+          <a href="/lobby.html" aria-current="page">All canvases</a>
+        </nav>
         <div id="auth"></div>
       </header>
       <p id="error" style="color:var(--pico-del-color)"></p>
