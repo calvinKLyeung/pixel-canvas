@@ -111,7 +111,16 @@
       </div>
       <div id="palette"></div>
       <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin:1rem 0">
-        <label><input type="checkbox" id="eraser"> Eraser</label>
+        <!-- A toggle: main.ts swaps it to solid while erasing -->
+        <button id="eraser" type="button" class="secondary outline" aria-pressed="false"
+                style="margin:0;padding:.45rem .8rem;display:inline-flex;align-items:center;gap:.45rem">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/>
+            <path d="M22 21H7"/><path d="m5 11 9 9"/>
+          </svg>
+          Eraser
+        </button>
         <select id="brush" aria-label="Brush size" style="width:auto;margin:0"></select>
       </div>
       <p><small id="notice"></small></p>

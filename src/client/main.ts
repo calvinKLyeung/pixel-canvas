@@ -197,7 +197,16 @@ function connect() {
 
 let selectedColour = 5;
 const paletteElem = document.getElementById("palette")!;
-const eraserElem = document.getElementById("eraser") as HTMLInputElement;
+const eraserElem = document.getElementById("eraser")!;
+let erasing = false;
+
+/** Solid while on, outlined while off - the button itself shows the state. */
+function setErasing(on: boolean) {
+    erasing = on;
+    eraserElem.setAttribute("aria-pressed", String(on));
+    eraserElem.className = on ? "" : "secondary outline";
+}
+eraserElem.addEventListener("click", () => setErasing(!erasing));
 
 PALETTE.forEach((_, i) => {
     const button = document.createElement("button");
@@ -209,7 +218,7 @@ PALETTE.forEach((_, i) => {
 
     button.addEventListener("click", () => {
         selectedColour = i;
-        eraserElem.checked = false;     // picking a colour means you want to paint
+        setErasing(false);              // picking a colour means you want to paint
         // redraw boarder to highlight selection
         [...paletteElem.children].forEach((elem, j) => {
             (elem as HTMLElement).style.borderColor = j === i ? "#000" : "transparent";
@@ -220,7 +229,7 @@ PALETTE.forEach((_, i) => {
 });
 
 /** The eraser is just a colour: EMPTY, which the server accepts by name. */
-const currentColour = () => (eraserElem.checked ? EMPTY : selectedColour);
+const currentColour = () => (erasing ? EMPTY : selectedColour);
 
 /**
  * Brush sizes live only in the browser: a stamp is sent as N² ordinary pixels. There is
