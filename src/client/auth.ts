@@ -36,7 +36,7 @@ export function openLogin(onCancel: () => void = () => {}, goTo = "/lobby.html")
     const dialog = document.createElement("dialog");
     dialog.innerHTML = `
         <article>
-          <header><h3 style="margin:0">Log in to see all canvases</h3></header>
+          <header><h3 style="margin:0">Log in to paint with friends</h3></header>
           <form>
             <input name="name" placeholder="Name" autocomplete="username" required>
             <input name="password" type="password" placeholder="Password (8+ characters)"
@@ -47,7 +47,7 @@ export function openLogin(onCancel: () => void = () => {}, goTo = "/lobby.html")
               <button name="register" class="secondary">Register</button>
             </div>
           </form>
-          <footer><a href="#" class="cancel">Stay on the main canvas</a></footer>
+          <footer><a href="#" class="cancel">Stay on Paint together</a></footer>
         </article>`;
     document.body.append(dialog);
 
