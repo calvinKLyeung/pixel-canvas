@@ -1,10 +1,14 @@
 import { MIN_DIM, MAX_DIM, MIN_NAME_LENGTH, MAX_NAME_LENGTH} from "./constants.js";
 
+/** "draw": paint with friends. "guess": paint and guess, a game on a fixed-size board. */
+export type RoomKind = "draw" | "guess";
+
 export interface CreateRequest {
     name: string;
     w: number;
     h: number;
     isPublic: boolean;
+    kind: RoomKind;
 }
 
 /** Verify request payload of canvas config */
@@ -24,6 +28,9 @@ export function validateCreate(rawRequest:unknown): string | null {
     }
     if (typeof createRequest.isPublic !== "boolean") {
         return "choose public or private";
+    }
+    if (createRequest.kind !== "draw" && createRequest.kind !== "guess") {
+        return "kind must be draw or guess";
     }
     return null;  // valid case
 }

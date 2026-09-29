@@ -41,7 +41,7 @@ describe("foldFrame", () => {
 describe("withinFloodCap", () => {
     const client = (now: number): Client => ({
         sock: {} as WebSocket,
-        canvas: createCanvas({ id: "t", name: "t", w: 4, h: 4, ownerId: null, isPublic: true, joinCode: null, createdAt: 0 }),
+        canvas: createCanvas({ id: "t", name: "t", w: 4, h: 4, ownerId: null, isPublic: true, joinCode: null, createdAt: 0, kind: "draw" }),
         floodTokens: FLOOD_BURST,
         floodAt: now,
         renewedAt: 0,
@@ -72,7 +72,7 @@ describe("withinFloodCap", () => {
 describe("ownerPainted", () => {
     const HOUR = 60 * 60_000;
     const room = (ownerId: number | null) =>
-        createCanvas({ id: "r", name: "r", w: 4, h: 4, ownerId, isPublic: true, joinCode: null, createdAt: 0 });
+        createCanvas({ id: "r", name: "r", w: 4, h: 4, ownerId, isPublic: true, joinCode: null, createdAt: 0, kind: "draw" });
     const painter = (userId: number | undefined, ownerId: number | null): Client => ({
         sock: {} as WebSocket, canvas: room(ownerId), userId,
         floodTokens: FLOOD_BURST, floodAt: 0, renewedAt: 0,

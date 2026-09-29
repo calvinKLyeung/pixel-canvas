@@ -6,12 +6,13 @@ process.env.DB_PATH = ":memory:";
 const { createUser, saveCanvasConfig, getCanvasConfig, setCanvasPrivacy, addMember } = await import("../server/db.js");
 const { canEnter, MAIN_ID } = await import("../server/canvas.js");
 import type { CanvasConfig } from "../server/canvas.js";
+import type { RoomKind } from "../shared/canvasConfig.js";
 
 const owner = createUser("owner", "x");
 const guest = createUser("guest", "x");
 
-function room(id: string, isPublic: boolean, ownerId: number | null = owner): CanvasConfig {
-    const cfg = { id, name: id, w: 16, h: 16, ownerId, isPublic, joinCode: "abc234", createdAt: 0 };
+function room(id: string, isPublic: boolean, ownerId: number | null = owner, kind: RoomKind = "draw"): CanvasConfig {
+    const cfg = { id, name: id, w: 16, h: 16, ownerId, isPublic, joinCode: "abc234", createdAt: 0, kind };
     saveCanvasConfig(cfg);
     return cfg;
 }
@@ -52,6 +53,13 @@ describe("one room per owner", () => {
         const solo = createUser("solo", "x");
         room("first", true, solo);
         expect(() => room("second", true, solo)).toThrow();
+    });
+
+    it("allows one game room alongside the drawing room", () => {
+        const both = createUser("both", "x");
+        room("draws", true, both, "draw");
+        expect(() => room("games", true, both, "guess")).not.toThrow();
+        expect(() => room("games2", true, both, "guess")).toThrow();
     });
 
     it("allows any number of ownerless canvases", () => {

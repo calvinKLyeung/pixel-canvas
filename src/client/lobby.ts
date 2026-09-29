@@ -1,5 +1,6 @@
 import { DEFAULT_W, DEFAULT_H, MIN_DIM, MAX_DIM } from "../shared/constants.js";
-import { validateCreate } from "../shared/canvasConfig.js";
+import { validateCreate, type RoomKind } from "../shared/canvasConfig.js";
+import { GAME_SIZE } from "../shared/game.js";
 import { me, renderAccount, openLogin } from "./auth.js";
 
 /** One row of GET /api/canvases */
@@ -14,6 +15,17 @@ interface Room {
     canEnter: boolean;
     code?: string | null;
     clients: number;
+}
+
+/** One page lists both kinds of room: /guess for games, anything else for drawing rooms. */
+const kind: RoomKind = location.pathname === "/guess" ? "guess" : "draw";
+const game = kind === "guess";
+document.getElementById(game ? "tab-guess" : "tab-draw")!.setAttribute("aria-current", "page");
+if (game) {
+    document.getElementById("heading")!.textContent = "Paint and guess";
+    document.title = "Paint and guess rooms";
+    // Games are always GAME_SIZE square; asking would only be ignored.
+    document.getElementById("size-fields")!.hidden = true;
 }
 
 const roomsElem = document.getElementById("rooms")!;
@@ -89,7 +101,9 @@ function tile(room: Room): HTMLElement {
 
     const detail = document.createElement("small");
     const owner = room.mine ? "you" : room.ownerName ?? "nobody";
-    detail.textContent = `by ${owner} · ${room.w}×${room.h} · ${room.clients} drawing now`;
+    detail.textContent = game
+        ? `by ${owner} · ${room.clients} playing now`
+        : `by ${owner} · ${room.w}×${room.h} · ${room.clients} drawing now`;
 
     article.append(thumb, title, detail);
     if (room.mine) article.append(ownerControls(room));
@@ -146,7 +160,7 @@ function ownerControls(room: Room): HTMLElement {
 function newRoomTile(): HTMLElement {
     const button = document.createElement("button");
     button.className = "tile new-room secondary";
-    button.innerHTML = `<strong style="font-size:1.4rem">+</strong><span>Create your room</span>`;
+    button.innerHTML = `<strong style="font-size:1.4rem">+</strong><span>${game ? "Create a game room" : "Create your room"}</span>`;
     button.addEventListener("click", () => {
         createErrorElem.textContent = "";
         createDialog.showModal();
@@ -171,7 +185,7 @@ function showError(message: string | null) {
 
 /** Fetch every room and redraw the tiles. */
 async function refresh(): Promise<void> {
-    const reply = await fetch("/api/canvases");
+    const reply = await fetch(`/api/canvases?kind=${kind}`);
     if (!reply.ok) return;              // logged out in another tab; the next load shows the popup
     const rooms: Room[] = await reply.json();
 
@@ -189,9 +203,10 @@ function readForm(): unknown {
     const data = new FormData(formElem);
     return {
         name: String(data.get("name") ?? ""),
-        w: Number(data.get("w")),
-        h: Number(data.get("h")),
+        w: game ? GAME_SIZE : Number(data.get("w")),
+        h: game ? GAME_SIZE : Number(data.get("h")),
         isPublic: data.get("privacy") === "public",
+        kind,
     };
 }
 
@@ -233,5 +248,5 @@ if (await me) {
     refresh();
     setInterval(refresh, REFRESH_MS);
 } else {
-    openLogin(() => { location.href = "/"; });
+    openLogin(() => { location.href = "/"; }, location.pathname);
 }

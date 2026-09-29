@@ -8,7 +8,7 @@ import {
 const MINUTE = 60 * 1000;
 
 function config(id: string): CanvasConfig {
-    return { id, name: id, w: 16, h: 16, ownerId: null, isPublic: true, joinCode: null, createdAt: 0 };
+    return { id, name: id, w: 16, h: 16, ownerId: null, isPublic: true, joinCode: null, createdAt: 0, kind: "draw" };
 }
 
 /** Put a canvas in memory that was last touched `idleMinutes` ago. */

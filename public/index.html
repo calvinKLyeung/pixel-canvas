@@ -50,25 +50,51 @@
       .tabs a:hover { color: var(--pico-color); }
       .tabs a[aria-current="page"] { color: var(--pico-primary); border-bottom-color: var(--pico-primary); }
       .topbar > :last-child { justify-self: end; }
+
+      /* Two hue ramps per line (main.ts adds them 8 at a time), one per line on phones.
+         The selected ring is white inside black, so it shows on black and white swatches. */
+      #palette[hidden], #tools[hidden] { display: none !important; }
+      #palette { display: grid; grid-template-columns: repeat(16, 28px); gap: 3px; margin-top: 1rem; }
+      #palette .swatch { width: 28px; height: 28px; padding: 0; margin: 0; border: none; border-radius: 3px; }
+      #palette .swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px #fff, 0 0 0 4px #000; }
+      /* The game panel. Buttons stay their own width in a row rather than pico's full width. */
+      .g-word { font-family: ui-monospace, Menlo, monospace; font-size: 1.5rem; font-weight: 700;
+                letter-spacing: .25em; margin: .25rem 0 .75rem; word-break: break-word; }
+      .g-timer { font-variant-numeric: tabular-nums; color: var(--pico-muted-color); }
+      .g-teams { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+      .g-teams h4 { font-size: .9rem; margin: 0 0 .25rem; }
+      .g-teams ul, .g-list { padding: 0; margin: 0 0 .75rem; }
+      .g-teams li, .g-list li { list-style: none; font-size: .9rem; margin: 0 0 .2rem; }
+      .g-row { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; margin-bottom: .75rem; }
+      .g-row button, .g-list button { width: auto; margin: 0; padding: .3rem .7rem; font-size: .85rem; }
+      .g-row input { flex: 1 1 8rem; margin: 0; }
+      .g-list li { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
+      .g-list .correct { color: var(--pico-ins-color); font-weight: 600; }
+      .g-list .rejected { color: var(--pico-muted-color); text-decoration: line-through; }
+      .g-log li { color: var(--pico-muted-color); }
+      #g-theme button { width: 100%; }
       @media (max-width: 600px) {
         .topbar { grid-template-columns: 1fr; justify-items: center; }
         .topbar > :last-child { justify-self: center; }
-        /* A full-width bar with equal halves: bigger tap targets, reads as a phone tab bar. */
+        /* A full-width bar with equal parts: bigger tap targets, reads as a phone tab bar. */
         .tabs { justify-self: stretch; }
         .tabs a { flex: 1; text-align: center; }
+        #palette { grid-template-columns: repeat(8, 32px); gap: 4px; }
+        #palette .swatch { width: 32px; height: 32px; }
       }
     </style>
     <title>{{TITLE}}</title>
   </head>
   <!-- Read by main.ts for display only; the server does the real ownership check -->
-  <body data-name="{{NAME}}" data-owner-id="{{OWNER_ID}}">
+  <body data-name="{{NAME}}" data-owner-id="{{OWNER_ID}}" data-kind="{{KIND}}">
     <main class="container">
       <header class="topbar">
-        <h1>Pixel Canvas</h1>
-        <!-- main.ts marks the Main tab current when this page is showing main -->
+        <h1>Paint &amp; Guess Together</h1>
+        <!-- main.ts marks the first tab current when this page is showing main -->
         <nav class="tabs">
-          <a id="maintab" href="/c/main">Main canvas</a>
-          <a id="lobbylink" href="/lobby.html">All canvases</a>
+          <a id="maintab" href="/c/main">Paint together</a>
+          <a id="lobbylink" href="/lobby.html">Paint with friends</a>
+          <a id="guesslink" href="/guess">Paint and guess with friends</a>
         </nav>
         <div id="auth"></div>
       </header>
@@ -100,6 +126,38 @@
         </a>
       </div>
       </div>
+      <!-- Game rooms only: teams, the word, guesses. game.ts fills it in. -->
+      <aside id="game" hidden style="flex:1 1 280px;max-width:380px;margin:0">
+        <article style="margin:0;padding:1rem">
+          <p style="margin:0 0 .25rem"><strong id="g-status"></strong> <span id="g-timer" class="g-timer"></span></p>
+          <p id="g-word" class="g-word"></p>
+          <div class="g-teams">
+            <div><h4>Painters</h4><ul id="g-painters"></ul></div>
+            <div><h4>Guessers</h4><ul id="g-guessers"></ul></div>
+          </div>
+          <div id="g-lobby" class="g-row">
+            <button type="button" id="g-join-painter" class="secondary outline">Join painters</button>
+            <button type="button" id="g-join-guesser" class="secondary outline">Join guessers</button>
+            <button type="button" id="g-ready">Ready</button>
+          </div>
+          <form id="g-theme">
+            <label>Rounds <select name="rounds"></select></label>
+            <label>Theme <input name="theme" placeholder="e.g. animals, kitchen, space" required></label>
+            <button type="submit">Make the words</button>
+          </form>
+          <form id="g-guess" class="g-row">
+            <input name="text" placeholder="Your guess" autocomplete="off" required>
+            <button type="submit">Guess</button>
+          </form>
+          <div class="g-row">
+            <button type="button" id="g-skip" class="secondary outline">Skip word</button>
+            <button type="button" id="g-again">Play again</button>
+          </div>
+          <small id="g-error" style="color:var(--pico-del-color)"></small>
+          <ul id="g-guesses" class="g-list"></ul>
+          <ul id="g-log" class="g-list g-log"></ul>
+        </article>
+      </aside>
       <aside id="expiry" hidden style="flex:1 1 200px;max-width:280px;margin:0">
         <article style="margin:0;padding:1rem">
           <p style="margin:0 0 .25rem"><strong id="expiry-days"></strong></p>
@@ -110,7 +168,7 @@
       </aside>
       </div>
       <div id="palette"></div>
-      <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin:1rem 0">
+      <div id="tools" style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin:1rem 0">
         <!-- A toggle: main.ts swaps it to solid while erasing -->
         <button id="eraser" type="button" class="secondary outline" aria-pressed="false"
                 style="margin:0;padding:.45rem .8rem;display:inline-flex;align-items:center;gap:.45rem">

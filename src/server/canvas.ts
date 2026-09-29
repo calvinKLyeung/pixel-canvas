@@ -2,11 +2,12 @@ import type { WebSocket} from "ws";
 import { EMPTY } from "../shared/palette.js"
 import { randomBytes } from "node:crypto";
 import { getCanvasConfig, isMember } from "./db.js";
-import { loadBoard, writeBoard, clearBoard, subscribeCanvas, readEvents } from "./redis.js";
+import { loadBoard, writeBoard, clearBoard, subscribeCanvas, readEvents, publishFrame } from "./redis.js";
 import {
     MSG, viewOf, decodeDelta, encodeDelta, encodeClear, MAX_DELTA_PIXELS, type Pixel,
 } from "../shared/protocols.js";
 import { index } from "../shared/constants.js";
+import type { RoomKind } from "../shared/canvasConfig.js";
 import { metrics } from "./metrics.js";
 
 /** The permanent landing canvas. Never created through the API, never evicted. */
@@ -23,6 +24,7 @@ export interface CanvasConfig {
     /** Needed to enter a private room. Kept when a room goes public, so it can go back. */
     joinCode: string | null;
     createdAt: number;
+    kind: RoomKind;
 }
 
 // Config + runtime canvas state
@@ -215,6 +217,8 @@ export interface Client {
     sock: WebSocket;
     canvas: Canvas;
     userId?: number;
+    /** Shown to other players in a game room. */
+    userName?: string;
     /** Messages this connection may still send right now. See withinFloodCap. */
     floodTokens: number;
     floodAt: number;
@@ -382,6 +386,23 @@ export function sendPending(canvas: Canvas) {
     for (let i = 0; i < pixels.length; i += MAX_DELTA_PIXELS) {
         broadcast(canvas, encodeDelta(pixels.slice(i, i + MAX_DELTA_PIXELS)));
     }
+}
+
+
+/**
+ * Wipe a board everywhere at once. One Redis SET of the whole board rather than a
+ * SETRANGE per pixel, and one CLEAR byte to clients rather than a delta of every pixel:
+ * the normal write path is built for single pixels, and bulk changes want their own.
+ */
+export async function clearCanvas(canvas: Canvas): Promise<void> {
+    canvas.board.fill(EMPTY);
+    // Pixels painted earlier this tick are about to be erased anyway. Left in, they would
+    // flush as a delta after the CLEAR and put a few random pixels back.
+    canvas.dirty.clear();
+    const clear = encodeClear();
+    await clearBoard(canvas, clear);
+    // Every process (this one too) clears its copy and tells its clients - see applyFrame.
+    await publishFrame(canvas.id, clear);
 }
 
 

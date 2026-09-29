@@ -13,9 +13,14 @@ import {
     peekResident, loadCanvas, addClient, removeClient, type Canvas, allResident,
     newCanvasId, newJoinCode, MAIN_ID, sweep, canEnter, readCanvas, dropResident, clientOf,
     applyFrame, sendPending, type CanvasConfig, type Client, withinFloodCap, FLOOD_BURST, ownerPainted,
+    clearCanvas,
 } from "./canvas.js";
 import {
-    saveCanvasConfig, getCanvasConfig, getCanvasByOwner, listCanvases, setCanvasSize,
+    onGameMessage, onGameText, joinGame, leaveGame, mayPaint, heartbeat, forgetGame, HEARTBEAT_MS,
+} from "./gameRoom.js";
+import { GAME_SIZE } from "../shared/game.js";
+import {
+    saveCanvasConfig, getCanvasConfig, getCanvasByOwner, canvasesByOwner, listCanvases, setCanvasSize,
     setCanvasPrivacy, deleteCanvasConfig, addMember, type User,
     inactiveUserIds, deleteUser, deleteExpiredSessions, touchActive,
 } from "./db.js";
@@ -68,6 +73,7 @@ async function ensureMain(): Promise<void> {
         isPublic: true,
         joinCode: null,
         createdAt: Date.now(),
+        kind: "draw",
     });
     // The save above never overwrites, so an older, bigger main keeps its old size without
     // this. Forcing it means the stored board no longer fits, and loadCanvas below starts
@@ -107,7 +113,7 @@ app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest)
     if (sock.readyState !== WebSocket.OPEN) return;
 
     const client: Client = {
-        sock, canvas, userId: user?.id, floodTokens: FLOOD_BURST, floodAt: Date.now(), renewedAt: 0,
+        sock, canvas, userId: user?.id, userName: user?.name, floodTokens: FLOOD_BURST, floodAt: Date.now(), renewedAt: 0,
     };
 
     // add socket to clients
@@ -115,10 +121,11 @@ app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest)
     // sock.send(JSON.stringify({ t: "snapshot", board: Array.from(board) }));
     sock.send(encodeSnapshot(canvas));
     app.log.info(`connected to ${canvas.id} - now have ${canvas.clients.size} websockets in total`);
+    if (canvas.kind === "guess") joinGame(client).catch(err => app.log.error(err, "joining game failed"));
 
 
     // broadcast to all clients
-    sock.on("message", (data: Buffer) => {
+    sock.on("message", (data: Buffer, isBinary: boolean) => {
         // Messages already buffered keep arriving after close(). Without this each one
         // would be parsed, and a flooded socket would count thousands of times below.
         if (sock.readyState !== WebSocket.OPEN) return;
@@ -128,6 +135,14 @@ app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest)
         if (!withinFloodCap(client)) {
             metrics.flooded += 1;
             sock.close(4029, "too many messages");
+            return;
+        }
+
+        // Text frames are game requests; pixels are always binary.
+        if (!isBinary) {
+            if (canvas.kind === "guess") {
+                onGameText(client, data.toString()).catch(err => app.log.error(err, "game request failed"));
+            }
             return;
         }
 
@@ -145,6 +160,9 @@ app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest)
         // drop out of bound numbers. EMPTY is allowed: that is the eraser.
         if (x >= canvas.w || y >= canvas.h) return;
         if (colour !== EMPTY && colour >= PALETTE_SIZE) return;
+        // In a game only painters draw, and only while there is a word. The page hides the
+        // tools from everyone else; this is the check that counts.
+        if (canvas.kind === "guess" && !mayPaint(canvas, client.userId)) return;
 
         metrics.pixelsIn += 1;
         if (ownerPainted(client)) touchActive(client.userId!);
@@ -156,6 +174,7 @@ app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest)
 
     sock.on("close", () => {
         removeClient(sock);
+        if (canvas.kind === "guess") leaveGame(client).catch(err => app.log.error(err, "leaving game failed"));
         app.log.info(`disconnected from ${canvas.id} - now have ${canvas.clients.size} websockets total`);
     });
 
@@ -189,14 +208,17 @@ const originOf = (req: FastifyRequest) =>
 function pageFor(cfg: CanvasConfig, origin: string): string {
     const id = encodeURIComponent(cfg.id);
     return pageTemplate
-        .replaceAll("{{TITLE}}", escapeHtml(`${cfg.name} - pixel canvas`))
-        .replaceAll("{{DESCRIPTION}}", escapeHtml(`A shared ${cfg.w}x${cfg.h} canvas anyone can paint on.`))
+        .replaceAll("{{TITLE}}", escapeHtml(`${cfg.name} - Paint & Guess Together`))
+        .replaceAll("{{DESCRIPTION}}", escapeHtml(cfg.kind === "guess"
+            ? "Paint and guess: one team draws, the other guesses the word."
+            : `A shared ${cfg.w}x${cfg.h} canvas anyone can paint on.`))
         .replaceAll("{{URL}}", escapeHtml(`${origin}/c/${id}`))
         .replaceAll("{{IMAGE}}", escapeHtml(`${origin}/board.png?alpha=0&c=${id}`))
         // For the page script, to decide whether to offer clear-all. The server still
         // checks - this only decides what the page shows.
         .replaceAll("{{NAME}}", escapeHtml(cfg.name))
-        .replaceAll("{{OWNER_ID}}", String(cfg.ownerId ?? ""));
+        .replaceAll("{{OWNER_ID}}", String(cfg.ownerId ?? ""))
+        .replaceAll("{{KIND}}", cfg.kind);
 }
 
 /** The canonical URL for a canvas. */
@@ -216,6 +238,9 @@ app.get("/", async (req, reply) => {
     const id = (req.query as { c?: string }).c ?? MAIN_ID;
     return reply.redirect(`/c/${encodeURIComponent(id)}`, 302);
 });
+
+/** The game rooms' lobby: the same page as the drawing rooms', which reads its path. */
+app.get("/guess", async (_req, reply) => reply.sendFile("lobby.html"));
 
 /** Static would serve the raw template here, placeholders and all. */
 app.get("/index.html", async (_req, reply) => reply.redirect("/", 302));
@@ -300,6 +325,7 @@ function onRoomEvent(id: string, event: RoomEvent) {
         for (const sock of [...live.clients]) sock.close(4004, "canvas deleted");
         dropResident(id);
         unsubscribeCanvas(id);
+        forgetGame(id);
         return;
     }
 
@@ -312,7 +338,7 @@ function onRoomEvent(id: string, event: RoomEvent) {
     }
 }
 
-onBusMessage({ frame: applyFrame, room: onRoomEvent });
+onBusMessage({ frame: applyFrame, room: onRoomEvent, game: onGameMessage });
 
 app.post("/api/canvas", async (req, reply) => {
     const user = requireUser(req, reply);
@@ -321,22 +347,26 @@ app.post("/api/canvas", async (req, reply) => {
     const error = validateCreate(req.body);
     if (error) return reply.code(400).send({ error: error });
 
+    const { name, w, h, isPublic, kind } = req.body as CreateRequest;
+
     // Checked here for a friendly message; the unique index is the real guard (see catch).
-    if (getCanvasByOwner(user.id)) {
+    if (getCanvasByOwner(user.id, kind)) {
         return reply.code(409).send({ error: "you already have a room - delete it to make a new one" });
     }
 
-    const { name, w, h, isPublic } = req.body as CreateRequest;
+    // Every game is played on the same size board, whatever the request asked for.
+    const game = kind === "guess";
     const cfg: CanvasConfig = {
         id: newCanvasId(),
         name,
-        w,
-        h,
+        w: game ? GAME_SIZE : w,
+        h: game ? GAME_SIZE : h,
         ownerId: user.id,
         isPublic,
         // Made even for a public room, so turning it private later has a code ready.
         joinCode: newJoinCode(),
         createdAt: Date.now(),
+        kind,
     }
 
     try {
@@ -355,8 +385,9 @@ app.get("/api/canvases", async (req, reply) => {
     const user = requireUser(req, reply);
     if (!user) return;
 
+    const kind = (req.query as { kind?: string }).kind === "guess" ? "guess" : "draw";
     // Lists what exists, not what is loaded - an evicted canvas is still a canvas.
-    return listCanvases(MAIN_ID, 60).map(cfg => {
+    return listCanvases(MAIN_ID, 60, kind).map(cfg => {
         const mine = cfg.ownerId === user.id;
         return {
             id: cfg.id,
@@ -448,10 +479,10 @@ async function purgeInactive(): Promise<void> {
     for (const userId of inactiveUserIds(Date.now() - INACTIVE_MS)) {
         // Room before account: nothing cascades from users to canvases (see deleteUser),
         // and a crash in between leaves an account the next pass will find again.
-        const room = getCanvasByOwner(userId);
-        if (room) await deleteRoom(room.id);
+        const rooms = canvasesByOwner(userId);
+        for (const room of rooms) await deleteRoom(room.id);
         deleteUser(userId);
-        app.log.info(`purged inactive user ${userId}${room ? ` and canvas ${room.id}` : ""}`);
+        app.log.info(`purged inactive user ${userId}${rooms.map(r => ` and canvas ${r.id}`).join("")}`);
     }
     const sessions = deleteExpiredSessions();
     if (sessions) app.log.info(`deleted ${sessions} expired sessions`);
@@ -529,22 +560,6 @@ app.get("/api/me", async (req, reply) => {
 
 
 /** ========== clearing a whole canvas ========== */
-
-/**
- * Wipe a board everywhere at once. One Redis SET of the whole board rather than a
- * SETRANGE per pixel, and one CLEAR byte to clients rather than a delta of every pixel:
- * the normal write path is built for single pixels, and bulk changes want their own.
- */
-async function clearCanvas(canvas: Canvas): Promise<void> {
-    canvas.board.fill(EMPTY);
-    // Pixels painted earlier this tick are about to be erased anyway. Left in, they would
-    // flush as a delta after the CLEAR and put a few random pixels back.
-    canvas.dirty.clear();
-    const clear = encodeClear();
-    await clearBoard(canvas, clear);
-    // Every process (this one too) clears its copy and tells its clients - see applyFrame.
-    await publishFrame(canvas.id, clear);
-}
 
 app.post("/api/c/:cid/clear", async (req, reply) => {
     const user = userFromToken(req.cookies.session);
@@ -658,6 +673,7 @@ app.addHook("onReady", async () => {
         for (const canvas of sweep(flushCanvas)) {
             // Synchronously, so it can never land after a reload's subscribe (see redis.ts).
             unsubscribeCanvas(canvas.id);
+            forgetGame(canvas.id);
             app.log.info(`evicted ${canvas.id}`);
         }
         pruneThumbnails();
@@ -672,6 +688,8 @@ app.addHook("onReady", async () => {
             }
         }
     }, KEEPALIVE_MS);
+
+    setInterval(heartbeat, HEARTBEAT_MS);
 
     const purge = () => purgeInactive().catch(err => app.log.error(err, "purging inactive accounts failed"));
     purge();    // at boot too: a server that restarts more often than hourly would never purge

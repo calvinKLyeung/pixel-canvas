@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { join } from "node:path";
 import type { CanvasConfig } from "./canvas.js";
+import type { RoomKind } from "../shared/canvasConfig.js";
 
 /**
  * One file on disk. No server, no connection pool - the library is the database.
@@ -62,10 +63,6 @@ db.exec(`
         canvas_id TEXT    NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
         PRIMARY KEY (user_id, canvas_id)
     );
-
-    -- One room per owner, enforced by the database rather than by a check in a route that
-    -- two quick clicks could both pass. NULLs never collide, so ownerless canvases are fine.
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_canvases_owner ON canvases(owner_id);
 `);
 
 // join_code arrived after the table did, and IF NOT EXISTS will not add a column to a table
@@ -101,6 +98,26 @@ if (!userColumns.includes("last_active_at")) {
     db.prepare(`UPDATE users SET last_active_at = ? WHERE last_active_at IS NULL`).run(Date.now());
 }
 
+// canvases.kind likewise: every room from before games existed is a drawing room.
+const hasKind = (db.prepare(`PRAGMA table_info(canvases)`).all() as { name: string }[])
+    .some(col => col.name === "kind");
+if (!hasKind) {
+    try {
+        db.exec(`ALTER TABLE canvases ADD COLUMN kind TEXT NOT NULL DEFAULT 'draw'`);
+    } catch (err) {
+        if (!String(err).includes("duplicate column")) throw err;
+    }
+}
+
+// One room of each kind per owner, enforced by the database rather than by a check in a
+// route that two quick clicks could both pass. NULLs never collide, so ownerless canvases
+// are fine. Replaces the older one-room-per-owner index, which would refuse a game room to
+// anyone who already has a drawing room.
+db.exec(`
+    DROP INDEX IF EXISTS idx_canvases_owner;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_canvases_owner_kind ON canvases(owner_id, kind);
+`);
+
 /** A row as SQLite stores it: snake_case columns, 0/1 for the boolean. */
 interface CanvasRow {
     id: string;
@@ -111,6 +128,7 @@ interface CanvasRow {
     is_public: number;
     join_code: string | null;
     created_at: number;
+    kind: RoomKind;
 }
 
 const toConfig = (row: CanvasRow): CanvasConfig => ({
@@ -122,13 +140,14 @@ const toConfig = (row: CanvasRow): CanvasConfig => ({
     isPublic: row.is_public === 1,
     joinCode: row.join_code,
     createdAt: row.created_at,
+    kind: row.kind,
 });
 
 // Prepared once at import, reused for every call: SQLite parses and plans the SQL a single
 // time. The @named holes are bound as values, so a canvas called "'); DROP TABLE" is a name.
 const insertCanvas = db.prepare(`
-    INSERT INTO canvases (id, name, w, h, cooldown_ms, owner_id, is_public, join_code, created_at)
-    VALUES (@id, @name, @w, @h, 0, @ownerId, @isPublic, @joinCode, @createdAt)
+    INSERT INTO canvases (id, name, w, h, cooldown_ms, owner_id, is_public, join_code, created_at, kind)
+    VALUES (@id, @name, @w, @h, 0, @ownerId, @isPublic, @joinCode, @createdAt, @kind)
     ON CONFLICT(id) DO NOTHING
 `);
 
@@ -149,6 +168,7 @@ export function saveCanvasConfig(cfg: CanvasConfig): void {
         isPublic: cfg.isPublic ? 1 : 0,
         joinCode: cfg.joinCode,
         createdAt: cfg.createdAt,
+        kind: cfg.kind,
     });
 }
 
@@ -158,18 +178,25 @@ export function getCanvasConfig(id: string): CanvasConfig | null {
     return row ? toConfig(row) : null;
 }
 
-const selectByOwner = db.prepare(`SELECT * FROM canvases WHERE owner_id = ?`);
+const selectByOwner = db.prepare(`SELECT * FROM canvases WHERE owner_id = ? AND kind = ?`);
+const selectAllByOwner = db.prepare(`SELECT * FROM canvases WHERE owner_id = ?`);
 
-/** The one canvas a user owns, if any. */
-export function getCanvasByOwner(userId: number): CanvasConfig | null {
-    const row = selectByOwner.get(userId) as CanvasRow | undefined;
+/** The one room of this kind a user owns, if any. */
+export function getCanvasByOwner(userId: number, kind: RoomKind): CanvasConfig | null {
+    const row = selectByOwner.get(userId, kind) as CanvasRow | undefined;
     return row ? toConfig(row) : null;
+}
+
+/** Every room a user owns, of either kind. */
+export function canvasesByOwner(userId: number): CanvasConfig[] {
+    return (selectAllByOwner.all(userId) as CanvasRow[]).map(toConfig);
 }
 
 // Private rooms are listed too - everyone logged in sees every tile, only entering is gated.
 const selectAllCanvases = db.prepare(`
     SELECT c.*, u.name AS owner_name
     FROM canvases c LEFT JOIN users u ON u.id = c.owner_id
+    WHERE c.kind = @kind
     ORDER BY c.id = @mainId DESC, c.created_at DESC
     LIMIT @limit
 `);
@@ -178,9 +205,9 @@ export interface ListedCanvas extends CanvasConfig {
     ownerName: string | null;
 }
 
-/** Every room, main first, then newest. Resident or not: the lobby lists what exists. */
-export function listCanvases(mainId: string, limit: number): ListedCanvas[] {
-    return (selectAllCanvases.all({ mainId, limit }) as (CanvasRow & { owner_name: string | null })[])
+/** Every room of a kind, main first, then newest. Resident or not: the lobby lists what exists. */
+export function listCanvases(mainId: string, limit: number, kind: RoomKind): ListedCanvas[] {
+    return (selectAllCanvases.all({ mainId, limit, kind }) as (CanvasRow & { owner_name: string | null })[])
         .map(row => ({ ...toConfig(row), ownerName: row.owner_name }));
 }
 
@@ -287,7 +314,7 @@ export function inactiveUserIds(before: number): number[] {
 
 /**
  * Remove an account. Sessions, memberships and drafts go with it (ON DELETE CASCADE).
- * Their room does NOT: canvases.owner_id has no foreign key, so delete it first.
+ * Their rooms do NOT: canvases.owner_id has no foreign key, so delete them first.
  */
 export function deleteUser(id: number): void {
     deleteUserRow.run(id);

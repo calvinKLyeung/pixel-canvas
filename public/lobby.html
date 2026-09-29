@@ -54,10 +54,12 @@
   <body>
     <main class="container">
       <header class="topbar">
-        <h1>Rooms</h1>
+        <h1 id="heading">Paint with friends</h1>
+        <!-- One page for both kinds of room; lobby.ts marks the current tab from the path -->
         <nav class="tabs">
-          <a href="/c/main">Main canvas</a>
-          <a href="/lobby.html" aria-current="page">All canvases</a>
+          <a href="/c/main">Paint together</a>
+          <a id="tab-draw" href="/lobby.html">Paint with friends</a>
+          <a id="tab-guess" href="/guess">Paint and guess with friends</a>
         </nav>
         <div id="auth"></div>
       </header>
@@ -72,7 +74,8 @@
           <label>Name
             <input name="name" maxlength="40" required>
           </label>
-          <div class="grid">
+          <!-- Hidden for game rooms, which are always the same size -->
+          <div class="grid" id="size-fields">
             <label>Width
               <input name="w" type="number" required>
             </label>

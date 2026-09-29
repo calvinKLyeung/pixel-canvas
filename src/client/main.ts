@@ -1,12 +1,13 @@
 import { index} from "../shared/constants.js";
 import { line } from "../shared/line.js";
-import { cssColour, PALETTE, EMPTY } from "../shared/palette.js";
+import { cssColour, PALETTE_RAMPS, EMPTY } from "../shared/palette.js";
 import { initRenderer, render } from "./render.js";
 import { initOverlay } from "./overlay.js";
 
 import {encodePlace, decodeDelta, MSG, viewOf} from "../shared/protocols.js";
 import { inflate } from "./decode.js";
 import { me, renderAccount, openLogin } from "./auth.js";
+import { initGame, onGameText, canPaint } from "./game.js";
 
 
 
@@ -20,6 +21,8 @@ const overlayElem = document.getElementById("overlay") as HTMLCanvasElement;
 const page = document.body.dataset;
 const ownerId = Number(page.ownerId) || null;
 const canvasName = page.name ?? "";
+/** A paint and guess room: only painters draw, and the game panel shows beside the board. */
+const isGame = page.kind === "guess";
 
 /** The one room anyone may use without an account. Same id as the server's MAIN_ID. */
 const MAIN_ID = "main";
@@ -46,12 +49,15 @@ if (canvasId === MAIN_ID) document.getElementById("maintab")!.setAttribute("aria
 const user = await me;
 renderAccount(document.getElementById("auth")!);
 
-// The lobby is for accounts only: logged out, the link opens the login popup instead.
-document.getElementById("lobbylink")!.addEventListener("click", (e) => {
-    if (user) return;               // a normal link to the lobby
-    e.preventDefault();
-    openLogin();
-});
+// The lobbies are for accounts only: logged out, their links open the login popup instead.
+for (const id of ["lobbylink", "guesslink"]) {
+    const link = document.getElementById(id) as HTMLAnchorElement;
+    link.addEventListener("click", (e) => {
+        if (user) return;           // a normal link to the lobby
+        e.preventDefault();
+        openLogin(() => {}, link.pathname);
+    });
+}
 
 
 // board - size is unknown until the SNAPSHOT header arrives, so nothing to draw yet
@@ -120,6 +126,11 @@ function connect() {
     });
 
     ws.addEventListener("message", async (e) => {
+        // Text frames are the game; pixels are always binary.
+        if (typeof e.data === "string") {
+            if (isGame) onGameText(e.data);
+            return;
+        }
         const data = e.data as ArrayBuffer;
         // Binary -> use the new protocol
         const view = viewOf(data);
@@ -208,25 +219,23 @@ function setErasing(on: boolean) {
 }
 eraserElem.addEventListener("click", () => setErasing(!erasing));
 
-PALETTE.forEach((_, i) => {
+// Laid out by ramp, not by index, so the next shade up or down is always beside you.
+for (const i of PALETTE_RAMPS.flat()) {
     const button = document.createElement("button");
-
-    button.style.cssText =
-        `background:${cssColour(i)};width:32px;height:32px;` +
-        `border:2px solid ${i === selectedColour ? "#000" : "transparent"};` +
-        `padding:0;margin:2px;display:inline-block`;
+    button.className = "swatch";
+    button.style.background = cssColour(i);
+    button.title = `colour ${i}`;
+    button.setAttribute("aria-pressed", String(i === selectedColour));
 
     button.addEventListener("click", () => {
         selectedColour = i;
         setErasing(false);              // picking a colour means you want to paint
-        // redraw boarder to highlight selection
-        [...paletteElem.children].forEach((elem, j) => {
-            (elem as HTMLElement).style.borderColor = j === i ? "#000" : "transparent";
-        });
+        for (const elem of paletteElem.children) elem.setAttribute("aria-pressed", "false");
+        button.setAttribute("aria-pressed", "true");
     });
 
     paletteElem.appendChild(button);
-});
+}
 
 /** The eraser is just a colour: EMPTY, which the server accepts by name. */
 const currentColour = () => (erasing ? EMPTY : selectedColour);
@@ -239,6 +248,18 @@ const BRUSH_SIZES = [1, 3, 5, 9] as const;
 const brushElem = document.getElementById("brush") as HTMLSelectElement;
 for (const n of BRUSH_SIZES) {
     brushElem.add(new Option(`${n}×${n}`, String(n)));
+}
+
+/**========== paint and guess ==========*/
+
+if (isGame) {
+    const tools = [paletteElem, document.getElementById("tools")!];
+    // Tools only for whoever may paint right now. The server drops anyone else's pixels anyway.
+    const showTools = () => { for (const elem of tools) elem.hidden = !canPaint(); };
+    showTools();
+    initGame(req => {
+        if (sock?.readyState === WebSocket.OPEN) sock.send(JSON.stringify(req));
+    }, showTools);
 }
 
 
@@ -255,6 +276,7 @@ for (const n of BRUSH_SIZES) {
  */
 function stamp(cx: number, cy: number): boolean {
     if (!board || sock?.readyState !== WebSocket.OPEN) return false;
+    if (isGame && !canPaint()) return false;
     const colour = currentColour();
     const r = Math.floor(Number(brushElem.value) / 2);
     let changed = false;

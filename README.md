@@ -1,13 +1,19 @@
 # pixel-canvas
 **Access at →** https://pixel-canvas.up.railway.app/
 
-A shared pixel canvas: everyone on a board paints together in real time over WebSockets.
+Paint & Guess Together - a shared pixel canvas: everyone on a board paints together in real time over WebSockets.
 Binary wire protocol, 20 Hz batched updates, several server processes kept in step through
 Redis pub/sub, and an append-only event log that every board can be rebuilt from.
 
-- **`main`**: a 16×16 board anyone can paint on, no account needed.
-- **Rooms**: log in to make one (up to 512×512), public or private with a join code.
-- **Lobby**: every room as a live thumbnail.
+- **Paint together** (`main`): a 16×16 board anyone can paint on, no account needed.
+- **Paint with friends** (rooms): log in to make one (up to 512×512), public or private with a join code.
+- **Paint and guess with friends** (game rooms, `/guess`): one team paints, the other guesses.
+  Everyone picks a team and presses Ready; a painter picks how many rounds and a theme, and
+  Claude makes one word per round (plus spares, so a painter can skip a word). Only
+  painters see the word and only painters can paint. An exact guess - ignoring case,
+  spaces and punctuation - wins the round; anything else waits for a painter's PASS or Not.
+  90 seconds a round; the score is words guessed.
+- **Lobby**: every room as a live thumbnail, one lobby per kind of room.
 - Accounts and rooms with no activity for 30 days are deleted. Activity means logging in,
   or the owner painting in their own room.
 
@@ -32,9 +38,9 @@ clients. The browser draws your own pixels immediately; the DELTA confirms them.
 
 | Where | What |
 |---|---|
-| `src/client` | `main.ts` canvas page, `lobby.ts`, `auth.ts` login popup, `render.ts` / `overlay.ts` drawing |
-| `src/shared` | `protocols.ts` wire format, palette, validation — used by browser and server |
-| `src/server` | `index.ts` routes + tick, `canvas.ts` in-memory state, `redis.ts` storage + pub/sub, `db.ts` SQLite, `auth.ts`, `export.ts` PNGs, `metrics.ts` |
+| `src/client` | `main.ts` canvas page, `game.ts` game panel, `lobby.ts`, `auth.ts` login popup, `render.ts` / `overlay.ts` drawing |
+| `src/shared` | `protocols.ts` wire format, `palette.ts` (64 colours in shade ramps; indexes never move, boards store them), validation — used by browser and server |
+| `src/server` | `game.ts` the game's rules as one pure function, `gameRoom.ts` game rooms across processes, `words.ts` word lists from Claude, `index.ts` routes + tick, `canvas.ts` in-memory state, `redis.ts` storage + pub/sub, `db.ts` SQLite, `auth.ts`, `export.ts` PNGs, `metrics.ts` |
 
 ## Running locally
 
@@ -61,6 +67,7 @@ open http://localhost:8080.
 | memory | resident canvases, per process | restart — by design |
 | Redis  | `canvas:<id>:board` — current board bytes | nothing: **derived**, rebuilt from the log |
 | Redis  | `canvas:<id>:events` — every DELTA and CLEAR frame, in order | **source of truth** |
+| Redis  | `canvas:<id>:game` — a game room's state, JSON, changed only under `canvas:<id>:game:lock` | nothing worth keeping: a lost game restarts in the lobby |
 | SQLite | users, sessions, canvas configs, memberships | — (needs a volume when deployed) |
 
 A clear is logged as one CLEAR frame, never by trimming the log. When a canvas is loaded
@@ -78,6 +85,7 @@ The `Dockerfile` builds the client and runs the server with `tsx`.
 | `REDIS_URL` | `${{Redis.REDIS_URL}}` | `redis://127.0.0.1:6379` (a `/n` suffix picks the database) |
 | `DB_PATH`   | `/data/canvas.db`, on a volume mounted at `/data` | `pixel-canvas.db` in the project root |
 | `NODE_ENV`  | `production` (set in the image) — turns on the `Secure` cookie | — |
+| `ANTHROPIC_API_KEY` | your Claude API key — game words come from Claude Haiku 4.5 | unset: words come from a built-in list and ignore the theme |
 
 Without the volume, every deploy wipes accounts and rooms. Start Redis with
 `--appendonly yes`: the event log is only as durable as Redis.
@@ -95,7 +103,7 @@ DELTA and CLEAR frames byte for byte, so these ids are part of the storage forma
 | 0      | u8   | type   | always 1 |
 | 1      | u16  | x      | 0..canvas width − 1 |
 | 3      | u16  | y      | 0..canvas height − 1 |
-| 5      | u8   | colour | palette index 0–15, or 255 (EMPTY) to erase |
+| 5      | u8   | colour | palette index 0–63, or 255 (EMPTY) to erase |
 
 x and y are checked against the canvas the socket joined. A connection may burst 10,000
 messages and sustain 2,000/s; past that it is closed with 4029.
@@ -121,6 +129,15 @@ Sent first on every connection, so a reconnect needs no separate re-sync.
 
 ### 5 — CLEAR   (server → client)   1 byte
 The whole board is now empty.
+
+### Game messages (game rooms only)
+JSON **text** frames on the same socket; pixels stay binary, so neither needs a tag to tell
+them apart. Browser → server: `{t:"team", team}`, `{t:"ready", ready}`,
+`{t:"theme", theme, rounds}`, `{t:"guess", text}`, `{t:"judge", guessId, pass}`,
+`{t:"skip"}`, `{t:"again"}`. Server → browser: `{t:"game", ...}`, the game as that player
+may see it (the word only for painters), after every change; or `{t:"error", error}`.
+Types in `src/shared/game.ts`. In a game room the server drops PLACE from anyone who is not
+a painter in a round.
 
 ### Close codes
 4001 log in first · 4003 private room · 4004 no such canvas · 4029 too many messages.
