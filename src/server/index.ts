@@ -22,7 +22,7 @@ import { GAME_SIZE } from "../shared/game.js";
 import {
     saveCanvasConfig, getCanvasConfig, getCanvasByOwner, canvasesByOwner, listCanvases, setCanvasSize,
     setCanvasPrivacy, deleteCanvasConfig, addMember, type User,
-    inactiveUserIds, deleteUser, deleteExpiredSessions, touchActive,
+    inactiveUserIds, deleteUser, deleteExpiredSessions, touchActive, restartOverdueClocksOnce,
 } from "./db.js";
 import {
     persistDirty, clearBoard, deleteBoard, publishFrame, publishRoomEvent, onBusMessage,
@@ -122,6 +122,9 @@ app.get("/ws", { websocket: true }, async (sock: WebSocket, req: FastifyRequest)
     sock.send(encodeSnapshot(canvas));
     app.log.info(`connected to ${canvas.id} - now have ${canvas.clients.size} websockets in total`);
     if (canvas.kind === "guess") joinGame(client).catch(err => app.log.error(err, "joining game failed"));
+    // A game host may never paint - they can be a guesser - so in a game room, turning up
+    // to your own room is what counts as activity.
+    if (canvas.kind === "guess" && user && user.id === canvas.ownerId) touchActive(user.id);
 
 
     // broadcast to all clients
@@ -690,6 +693,9 @@ app.addHook("onReady", async () => {
     }, KEEPALIVE_MS);
 
     setInterval(heartbeat, HEARTBEAT_MS);
+
+    const restarted = restartOverdueClocksOnce(Date.now() - INACTIVE_MS);
+    if (restarted) app.log.info(`restarted the inactivity clock of ${restarted} overdue accounts`);
 
     const purge = () => purgeInactive().catch(err => app.log.error(err, "purging inactive accounts failed"));
     purge();    // at boot too: a server that restarts more often than hourly would never purge

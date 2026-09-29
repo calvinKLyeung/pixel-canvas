@@ -14,8 +14,8 @@ Redis pub/sub, and an append-only event log that every board can be rebuilt from
   spaces and punctuation - wins the round; anything else waits for a painter's PASS or Not.
   90 seconds a round; the score is words guessed.
 - **Lobby**: every room as a live thumbnail, one lobby per kind of room.
-- Accounts and rooms with no activity for 30 days are deleted. Activity means logging in,
-  or the owner painting in their own room.
+- Accounts and rooms (drawing and game rooms alike) with no activity for 10 days are deleted. Activity means logging in,
+  the owner painting in their own room, or the owner joining their own game room.
 
 ## How it fits together
 

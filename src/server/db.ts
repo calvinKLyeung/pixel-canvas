@@ -307,6 +307,18 @@ export function touchActive(id: number, at = Date.now()): void {
     updateLastActive.run(at, id);
 }
 
+/**
+ * Once per database: restart the clock of every account already older than `before`, so
+ * shortening the inactivity limit gives them the full new limit, with the countdown showing,
+ * instead of deleting them at the next purge without warning. PRAGMA user_version marks it done.
+ */
+export const restartOverdueClocksOnce = db.transaction((before: number, now = Date.now()): number => {
+    if ((db.pragma("user_version", { simple: true }) as number) >= 1) return 0;
+    const changed = db.prepare(`UPDATE users SET last_active_at = ? WHERE last_active_at < ?`).run(now, before).changes;
+    db.pragma("user_version = 1");
+    return changed;
+});
+
 /** Non-admin accounts whose last activity is older than `before`. */
 export function inactiveUserIds(before: number): number[] {
     return (selectInactiveUsers.all(before) as { id: number }[]).map(r => r.id);

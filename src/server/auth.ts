@@ -7,11 +7,12 @@ import {
 
 export const SESSION_DAYS = 30;
 /**
- * An account with no activity for this long is deleted, with its room. Activity is logging
- * in, or painting in your own room - so an owner who only ever uses a saved login keeps
- * their room by painting in it. The owner's canvas page shows how many days are left.
+ * An account with no activity for this long is deleted, with its rooms. Activity is logging
+ * in, painting in your own room, or joining your own game room - so an owner who only ever
+ * uses a saved login keeps their rooms by using them. The owner's canvas page shows how
+ * many days are left.
  */
-export const INACTIVE_DAYS = 30;
+export const INACTIVE_DAYS = 10;
 export const INACTIVE_MS = INACTIVE_DAYS * 864e5;
 export const MIN_USERNAME = 3;
 export const MAX_USERNAME = 20;

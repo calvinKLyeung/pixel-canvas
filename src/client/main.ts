@@ -374,8 +374,8 @@ if (user?.deleteAt && user.id === ownerId) {
     const daysLeft = Math.max(0, Math.ceil((user.deleteAt - Date.now()) / DAY_MS));
     const daysElem = document.getElementById("expiry-days")!;
     daysElem.textContent = daysLeft === 1 ? "1 day left" : `${daysLeft} days left`;
-    // The last week is when it needs noticing; before that it is just information.
-    if (daysLeft <= 7) daysElem.style.color = "var(--pico-del-color)";
+    // The last few days are when it needs noticing; before that it is just information.
+    if (daysLeft <= 3) daysElem.style.color = "var(--pico-del-color)";
     document.getElementById("expiry-renew")!.addEventListener("click", () => {
         openLogin(() => {}, location.pathname + location.search);
     });
