@@ -221,7 +221,8 @@ function pageFor(cfg: CanvasConfig, origin: string): string {
         // checks - this only decides what the page shows.
         .replaceAll("{{NAME}}", escapeHtml(cfg.name))
         .replaceAll("{{OWNER_ID}}", String(cfg.ownerId ?? ""))
-        .replaceAll("{{KIND}}", cfg.kind);
+        .replaceAll("{{KIND}}", cfg.kind)
+        .replaceAll("{{HEADING}}", escapeHtml(cfg.id === MAIN_ID ? "Paint together" : "Paint & Guess Together"));
 }
 
 /** The canonical URL for a canvas. */

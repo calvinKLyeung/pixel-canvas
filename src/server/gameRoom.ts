@@ -141,7 +141,7 @@ export async function onGameText(client: Client, text: string) {
     // stay usable meanwhile. The state says a request is out, so a second click is refused.
     if (action.type === "theme") {
         const s = result.state;
-        const { words, fromAi } = await makeWords(s.theme, s.rounds + SPARE_WORDS);
+        const { words, fromAi } = await makeWords(s.theme, s.rounds + SPARE_WORDS, userId);
         await act(client.canvas, { type: "words", words, fromAi });
     }
 }

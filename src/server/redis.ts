@@ -150,6 +150,22 @@ export function publishGame(id: string, json: string): Promise<number> {
 }
 
 
+/**
+ * Count one word request against today's allowance, for this user and for the whole server.
+ * In Redis so every process shares one count. Keys carry the UTC date and expire after two
+ * days, so yesterday's count never needs resetting.
+ */
+export async function countWordRequest(userId: number): Promise<{ user: number; total: number }> {
+    const day = new Date().toISOString().slice(0, 10);
+    const userKey = `words:${day}:user:${userId}`, totalKey = `words:${day}:total`;
+    const replies = await redis.multi()
+        .incr(userKey).expire(userKey, 2 * 86400)
+        .incr(totalKey).expire(totalKey, 2 * 86400)
+        .exec();
+    return { user: replies![0]![1] as number, total: replies![2]![1] as number };
+}
+
+
 /** Close both connections, so a script can exit. The server never calls this. */
 export async function closeRedis(): Promise<void> {
     await Promise.all([redis.quit(), sub.quit()]);

@@ -101,9 +101,8 @@ function render() {
 
     // Anyone may switch teams in the lobby; mid-game only someone without a team may join one.
     const canPickTeam = v.phase === "lobby" || (v.phase !== "over" && !mine?.team);
-    $("g-lobby").hidden = !canPickTeam;
-    $("g-join-painter").hidden = mine?.team === "painter";
-    $("g-join-guesser").hidden = mine?.team === "guesser";
+    $("g-join-painter").hidden = !canPickTeam || mine?.team === "painter";
+    $("g-join-guesser").hidden = !canPickTeam || mine?.team === "guesser";
     const ready = $("g-ready") as HTMLButtonElement;
     ready.hidden = v.phase !== "lobby" || !mine?.team;
     ready.textContent = mine?.ready ? "Not ready" : "Ready";
