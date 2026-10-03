@@ -5,6 +5,8 @@ Paint & Guess Together - a shared pixel canvas: everyone on a board paints toget
 Binary wire protocol, 20 Hz batched updates, several server processes kept in step through
 Redis pub/sub, and an append-only event log that every board can be rebuilt from.
 
+<img src="pixel_canvas.png" alt="The Paint together board with a pixel-art Pikachu" width="400">
+
 - **Paint together** (`main`): a 16×16 board anyone can paint on, no account needed.
 - **Paint with friends** (rooms): log in to make one (up to 512×512), public or private with a join code.
 - **Paint and guess with friends** (game rooms, `/guess`): one team paints, the other guesses.
